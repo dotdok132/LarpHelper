@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+*.pyo
+*.swp
+*~
+.DS_Store
+.config/
+backups/
+history.json
+custom_recipes.json
+config.json
+*.env

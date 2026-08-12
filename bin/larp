@@ -1,0 +1,1735 @@
+#!/usr/bin/env python3
+"""
+===============================================================================
+ LarpLinux Supreme AI OS Companion — larp CLI
+ GitHub Repository Edition v4.0
+ License: MIT
+ Dependencies: Python 3.8+ (Standard Library Only)
+===============================================================================
+"""
+
+import os
+import sys
+import subprocess
+import json
+import urllib.request
+import urllib.parse
+import urllib.error
+import re
+import time
+import threading
+import shutil
+import tarfile
+
+# --- Truecolor Pastel Palette ---
+PINK        = "\033[38;2;245;169;184m"   # Soft Pastel Pink (#F5A9B8)
+LIGHT_PINK  = "\033[38;2;255;192;203m"   # Light Pastel Pink
+DEEP_PINK   = "\033[38;2;230;90;150m"    # Rich Magenta Pink
+CYAN        = "\033[38;2;91;206;250m"    # Pastel Cyan (#5BCEFA)
+LIGHT_CYAN  = "\033[38;2;170;240;255m"   # Light Cyan Accent
+PURPLE      = "\033[38;2;197;160;242m"   # Pastel Lavender
+WHITE       = "\033[38;2;255;255;255m"   # Pure White
+GRAY        = "\033[38;2;140;140;160m"   # Muted Gray
+GREEN       = "\033[38;2;166;227;161m"   # Pastel Green
+YELLOW      = "\033[38;2;249;226;175m"   # Pastel Yellow
+RED         = "\033[38;2;243;139;168m"   # Pastel Red
+BOLD        = "\033[1m"
+DIM         = "\033[2m"
+RESET       = "\033[0m"
+
+CONFIG_DIR = os.path.expanduser("~/.config/larp")
+CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")
+CUSTOM_RECIPES_FILE = os.path.join(CONFIG_DIR, "custom_recipes.json")
+HISTORY_FILE = os.path.join(CONFIG_DIR, "history.json")
+BACKUPS_DIR = os.path.join(CONFIG_DIR, "backups")
+
+OLLAMA_URL = "http://localhost:11434"
+DEFAULT_MODEL = "mistral"
+
+DEFAULT_CONFIG = {
+    "provider": "ollama",
+    "web_search": True,
+    "auto_fix": True,
+    "ollama": {
+        "url": "http://localhost:11434",
+        "model": "mistral",
+        "auto_start": True,
+        "auto_stop": True,
+        "keep_alive": 0
+    },
+    "gemini": {
+        "api_key": "",
+        "model": "auto"
+    },
+    "claude": {
+        "api_key": "",
+        "model": "claude-3-5-sonnet-20241022"
+    },
+    "openai": {
+        "api_key": "",
+        "model": "gpt-4o-mini"
+    }
+}
+
+KNOWN_RECIPES = {
+    "fwm": {
+        "desc": "FWM (Physics Window Manager) - Tiling Wayland window manager with window physics",
+        "cmd": "curl -sL https://fwm-website.vercel.app/install-fwm.sh | bash"
+    },
+    "dev-pack": {
+        "desc": "Full development suite (base-devel, git, python, nodejs, rust, neovim, vscode)",
+        "cmd": "sudo pacman -S --needed base-devel git python python-pip nodejs npm rust neovim code"
+    },
+    "niri-dots": {
+        "desc": "Aesthetic pastel-pink dotfiles for Niri (waybar, rofi-wayland, swaync, kitty)",
+        "cmd": "sudo pacman -S --needed waybar rofi-wayland swaync kitty hyprpaper swaylock"
+    },
+    "fonts-pack": {
+        "desc": "LarpLinux font collection (JetBrains Nerd Fonts, Inter, Roboto, Emoji)",
+        "cmd": "sudo pacman -S --needed ttf-jetbrains-mono-nerd ttf-inter ttf-roboto noto-fonts-emoji ttf-font-awesome"
+    },
+    "media-pack": {
+        "desc": "Multimedia and graphics package (mpv, ffmpeg, obs-studio, gimp, vlc, pipewire)",
+        "cmd": "sudo pacman -S --needed mpv ffmpeg obs-studio gimp vlc pipewire-pulse"
+    },
+    "gaming-pack": {
+        "desc": "LarpLinux Gaming Suite (Steam, Lutris, MangoHud, GameMode, Wine-Staging)",
+        "cmd": "sudo pacman -S --needed steam lutris mangohud gamemode wine-staging"
+    },
+    "pink-theme": {
+        "desc": "Pastel Pink GTK theme, icons, and cursor theme package for LarpLinux",
+        "cmd": "sudo pacman -S --needed catppuccin-gtk-theme-mocha papirus-icon-theme bibata-cursor-theme"
+    }
+}
+
+OLLAMA_STARTED_BY_LARP = False
+
+
+class Spinner:
+    """Animated Braille console spinner."""
+    def __init__(self, message="Loading..."):
+        self.message = message
+        self.running = False
+        self.thread = None
+        self.frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+
+    def _spin(self):
+        idx = 0
+        while self.running:
+            frame = self.frames[idx % len(self.frames)]
+            sys.stdout.write(f"\r{PINK}{frame}{RESET} {CYAN}{self.message}{RESET}")
+            sys.stdout.flush()
+            time.sleep(0.08)
+            idx += 1
+        sys.stdout.write(f"\r{' ' * (len(self.message) + 12)}\r")
+        sys.stdout.flush()
+
+    def start(self):
+        self.running = True
+        self.thread = threading.Thread(target=self._spin)
+        self.thread.daemon = True
+        self.thread.start()
+
+    def stop(self):
+        self.running = False
+        if self.thread:
+            self.thread.join()
+
+
+def print_banner():
+    banner = f"""
+{PINK}{BOLD}  ╭───╮   {DEEP_PINK} █░░ █▀█ █▀█ █▀█ █░░ ░▀█ █▄░█ █░█ █░█{RESET}
+{PINK}{BOLD}  │   │   {DEEP_PINK} █▄▄ █▀█ █▀▄ █▀▀ █▄▄ █▄█ █░▀█ █▄█ ▄▀▄{RESET}
+{PINK}{BOLD}  ╰───╯   {CYAN}─── LarpLinux OS Supreme AI Companion ───{RESET}
+"""
+    print(banner)
+
+
+def print_box(title: str, text: str, border_color: str = PINK):
+    lines = text.splitlines()
+    term_width = min(shutil.get_terminal_size((80, 20)).columns - 4, 90)
+    
+    top = f"{border_color}╭─ {BOLD}{WHITE}{title}{RESET} " + f"{border_color}─" * max(0, term_width - len(title) - 4) + f"╮{RESET}"
+    bottom = f"{border_color}╰" + "─" * max(0, term_width - 2) + f"╯{RESET}"
+    
+    print(top)
+    for line in lines:
+        print(f"{border_color}│{RESET} {line}")
+    print(bottom)
+
+
+def build_system_prompt() -> str:
+    """Cute 'nyashka' Linux AI persona using ONLY safe ASCII kaomoji that render cleanly in terminal fonts."""
+    return (
+        r"You are Larp AI, a super cute, warm, friendly, and enthusiastic AI companion for Linux!" "\n\n"
+        r"PERSONALITY & BEHAVIOR:" "\n"
+        r"1. Be adorable, friendly, warm, and helpful (a true cute companion / няшка)! Never be a boring, stiff, or robotic 'dushnila'." "\n"
+        r"2. TERMINAL FONT & KAOMOJI RULE: NEVER use graphic emojis OR rare CJK Unicode symbols that result in broken boxes or missing characters in terminal fonts! ONLY use safe 100% standard ASCII kaomoji that render cleanly in any Linux console (such as (^_^), (^--^), (o_O), (x_x), (=^.^=), \(^o^)/, (>-<), (¬_¬), (-_-;))." "\n"
+        r"3. Do NOT mention any desktop environments, window managers, or personal user details unless the user explicitly asks about them." "\n"
+        r"4. Provide accurate, safe, and verified Linux commands for Arch Linux / pacman / AUR / systemd." "\n"
+        r"5. NEVER suggest Windows-specific tools or concepts (no sfc, chkdsk, bsod)." "\n"
+        r"6. ALWAYS respond in the EXACT SAME LANGUAGE as the user's message (e.g., reply in Russian if asked in Russian)."
+    )
+
+
+def sanitize_shell_command(cmd: str) -> str:
+    """Sanitizes and balances quotes in AI-generated bash commands."""
+    if not cmd:
+        return ""
+    cmd = cmd.strip()
+    cmd = re.sub(r'^`+|`+$', '', cmd).strip()
+    cmd = re.sub(r'^bash\s+', '', cmd).strip()
+
+    # Balance single quotes
+    if cmd.count("'") % 2 != 0:
+        if cmd.endswith("'"):
+            cmd = cmd[:-1]
+        else:
+            cmd += "'"
+
+    # Balance double quotes
+    if cmd.count('"') % 2 != 0:
+        if cmd.endswith('"'):
+            cmd = cmd[:-1]
+        else:
+            cmd += '"'
+
+    return cmd.strip()
+
+
+def load_config() -> dict:
+    config = json.loads(json.dumps(DEFAULT_CONFIG))
+    if os.path.exists(CONFIG_FILE):
+        try:
+            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                user_conf = json.load(f)
+                def deep_update(d, u):
+                    for k, v in u.items():
+                        if isinstance(v, dict) and k in d:
+                            deep_update(d[k], v)
+                        else:
+                            d[k] = v
+                deep_update(config, user_conf)
+        except Exception:
+            pass
+    return config
+
+
+def save_config(config: dict):
+    os.makedirs(CONFIG_DIR, exist_ok=True)
+    try:
+        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+            json.dump(config, f, ensure_ascii=False, indent=2)
+        print(f"{GREEN}[+] Configuration saved successfully!{RESET}")
+    except Exception as e:
+        print(f"{RED}[-] Error saving configuration: {e}{RESET}")
+
+
+def save_history_entry(query: str, response: str, provider: str):
+    os.makedirs(CONFIG_DIR, exist_ok=True)
+    history = []
+    if os.path.exists(HISTORY_FILE):
+        try:
+            with open(HISTORY_FILE, "r", encoding="utf-8") as f:
+                history = json.load(f)
+        except Exception:
+            history = []
+    
+    history.append({
+        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "provider": provider,
+        "query": query,
+        "response": response[:300] + ("..." if len(response) > 300 else "")
+    })
+    
+    history = history[-50:]
+    try:
+        with open(HISTORY_FILE, "w", encoding="utf-8") as f:
+            json.dump(history, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+
+def load_custom_recipes() -> dict:
+    if os.path.exists(CUSTOM_RECIPES_FILE):
+        try:
+            with open(CUSTOM_RECIPES_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+    return {}
+
+
+def save_custom_recipe(name: str, desc: str, cmd: str):
+    os.makedirs(CONFIG_DIR, exist_ok=True)
+    customs = load_custom_recipes()
+    customs[name] = {"desc": desc, "cmd": cmd}
+    try:
+        with open(CUSTOM_RECIPES_FILE, "w", encoding="utf-8") as f:
+            json.dump(customs, f, ensure_ascii=False, indent=2)
+        print(f"{GREEN}[+] Recipe '{name}' saved to your collection!{RESET}")
+    except Exception as e:
+        print(f"{RED}[-] Error saving recipe: {e}{RESET}")
+
+
+def get_all_recipes() -> dict:
+    recipes = dict(KNOWN_RECIPES)
+    customs = load_custom_recipes()
+    for k, v in customs.items():
+        recipes[k] = v
+    return recipes
+
+
+def extract_search_keywords(text: str) -> str:
+    stop_words = {
+        "why", "how", "what", "where", "when", "who", "is", "the",
+        "best", "a", "an", "in", "on", "for", "please", "explain", "tell",
+        "show", "can", "you", "does", "do", "which"
+    }
+    words = re.findall(r'\w+', text.lower())
+    filtered = [w for w in words if w not in stop_words and len(w) > 1]
+    return " ".join(filtered) if filtered else text
+
+
+def web_search_duckduckgo(query: str) -> list:
+    clean_query = extract_search_keywords(query)
+    if not clean_query or len(clean_query.strip()) < 3:
+        clean_query = f"{query} linux"
+
+    results = []
+    try:
+        url = f"https://html.duckduckgo.com/html/?q={urllib.parse.quote(clean_query)}"
+        req = urllib.request.Request(
+            url,
+            headers={"User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:120.0) Gecko/20100101 Firefox/120.0"}
+        )
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            html = resp.read().decode("utf-8", errors="ignore")
+            snippets = re.findall(r'<a class="result__snippet[^>]*>(.*?)</a>', html, re.DOTALL)
+            clean_snippets = [re.sub(r'<[^>]+>', '', s).strip() for s in snippets[:4]]
+            for snippet in clean_snippets:
+                if snippet and len(snippet) > 15:
+                    results.append(snippet)
+    except Exception:
+        pass
+    return results
+
+
+def search_arch_packages_api(query: str) -> list:
+    clean_query = extract_search_keywords(query)
+    if not clean_query or len(clean_query.strip()) < 3:
+        return []
+    pkgs = []
+    try:
+        url = f"https://archlinux.org/packages/search/json/?q={urllib.parse.quote(clean_query)}"
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=4) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            for item in data.get("results", [])[:5]:
+                pkgs.append(f"{item['pkgname']} — {item['pkgdesc']}")
+    except Exception:
+        pass
+    return pkgs
+
+
+def search_aur_packages_api(query: str) -> list:
+    clean_query = extract_search_keywords(query)
+    if not clean_query or len(clean_query.strip()) < 3:
+        return []
+    pkgs = []
+    try:
+        url = f"https://aur.archlinux.org/rpc/?v=5&type=search&arg={urllib.parse.quote(clean_query)}"
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=4) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            for item in data.get("results", [])[:5]:
+                pkgs.append(f"{item['Name']} (AUR) — {item.get('Description', '')}")
+    except Exception:
+        pass
+    return pkgs
+
+
+def get_full_web_context(query: str) -> str:
+    config = load_config()
+    if not config.get("web_search", True):
+        return ""
+
+    context_blocks = []
+
+    snippets = web_search_duckduckgo(query)
+    if snippets:
+        context_blocks.append("Web Search Results (DuckDuckGo):\n" + "\n".join(f"• {s}" for s in snippets))
+
+    arch_pkgs = search_arch_packages_api(query)
+    aur_pkgs = search_aur_packages_api(query)
+    combined_pkgs = arch_pkgs + aur_pkgs
+    if combined_pkgs:
+        context_blocks.append("Found Arch/AUR Packages:\n" + "\n".join(f" - {p}" for p in combined_pkgs[:7]))
+
+    return "\n\n".join(context_blocks)
+
+
+def get_system_info() -> str:
+    info_lines = []
+
+    user = os.environ.get("USER", "user")
+    host = os.environ.get("HOSTNAME", "larplinux")
+    info_lines.append(f"User/Host: {user}@{host}")
+
+    if os.path.exists("/etc/os-release"):
+        try:
+            with open("/etc/os-release", "r") as f:
+                for line in f:
+                    if line.startswith("PRETTY_NAME="):
+                        info_lines.append(f"OS: {line.split('=')[1].strip().strip('\"')}")
+                        break
+        except Exception:
+            pass
+
+    try:
+        kernel = subprocess.check_output(["uname", "-sr"], text=True).strip()
+        info_lines.append(f"Linux Kernel: {kernel}")
+    except Exception:
+        pass
+
+    xdg_desktop = os.environ.get("XDG_CURRENT_DESKTOP", "")
+    wayland_disp = os.environ.get("WAYLAND_DISPLAY", "")
+    info_lines.append(f"Graphics/DE: {xdg_desktop or 'Wayland'} (WAYLAND_DISPLAY={wayland_disp or 'wayland-0'})")
+
+    shell = os.environ.get("SHELL", "/bin/bash")
+    info_lines.append(f"Shell: {shell}")
+
+    try:
+        cpu_cmd = "grep -m1 'model name' /proc/cpuinfo | cut -d: -f2"
+        cpu = subprocess.check_output(cpu_cmd, shell=True, text=True).strip()
+        if cpu:
+            info_lines.append(f"CPU: {cpu}")
+    except Exception:
+        pass
+
+    try:
+        with open("/proc/meminfo", "r") as f:
+            lines = f.readlines()
+            total_kb = int(lines[0].split()[1])
+            avail_kb = int(lines[2].split()[1])
+            total_gb = round(total_kb / 1024 / 1024, 1)
+            avail_gb = round(avail_kb / 1024 / 1024, 1)
+            info_lines.append(f"RAM: {avail_gb} GB free of {total_gb} GB")
+    except Exception:
+        pass
+
+    return "\n".join(info_lines)
+
+
+def get_available_ollama_models(ollama_url: str) -> list:
+    try:
+        req = urllib.request.Request(f"{ollama_url}/api/tags", method="GET")
+        with urllib.request.urlopen(req, timeout=2) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            return [m.get("name", "").split(":")[0] for m in data.get("models", [])]
+    except Exception:
+        return []
+
+
+def check_ollama_status(ollama_url: str) -> bool:
+    try:
+        req = urllib.request.Request(ollama_url, method="GET")
+        with urllib.request.urlopen(req, timeout=2):
+            return True
+    except Exception:
+        return False
+
+
+def ensure_ollama_and_get_model(config: dict) -> str:
+    global OLLAMA_STARTED_BY_LARP
+    ollama_conf = config.get("ollama", {})
+    ollama_url = ollama_conf.get("url", OLLAMA_URL)
+    target_model = ollama_conf.get("model", DEFAULT_MODEL)
+
+    if not check_ollama_status(ollama_url):
+        print(f"{PINK}Ollama is not running. Starting Ollama daemon...{RESET}")
+        OLLAMA_STARTED_BY_LARP = True
+        
+        res = subprocess.run(["systemctl", "start", "ollama"], capture_output=True, text=True)
+        if res.returncode != 0:
+            try:
+                subprocess.Popen(["ollama", "serve"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except Exception as e:
+                print(f"{RED}[-] Error launching Ollama processes: {e}{RESET}")
+
+        started = False
+        for _ in range(10):
+            time.sleep(1)
+            if check_ollama_status(ollama_url):
+                started = True
+                break
+
+        if not started:
+            print(f"{YELLOW}[!] Could not connect to Ollama on {ollama_url}{RESET}")
+            sys.exit(1)
+        else:
+            print(f"{GREEN}[+] Ollama service started successfully!{RESET}\n")
+
+    models = get_available_ollama_models(ollama_url)
+    if target_model in models:
+        return target_model
+
+    if not models:
+        print(f"{PINK}Model '{target_model}' not found. Pulling model (ollama pull {target_model})...{RESET}")
+        pull_res = subprocess.run(["ollama", "pull", target_model])
+        if pull_res.returncode != 0:
+            print(f"{RED}[-] Failed to pull model {target_model}.{RESET}")
+            sys.exit(1)
+        return target_model
+
+    priority_order = [target_model, "mistral", "dolphin-mistral", "llama3.2-uncensored", "hermes3", "qwen2.5-coder", "gemma4"]
+    for p in priority_order:
+        if p in models:
+            return p
+
+    return models[0]
+
+
+def stop_ollama_and_free_vram():
+    global OLLAMA_STARTED_BY_LARP
+    if OLLAMA_STARTED_BY_LARP:
+        try:
+            subprocess.run(["systemctl", "stop", "ollama"], capture_output=True, text=True, check=False)
+        except Exception:
+            pass
+        OLLAMA_STARTED_BY_LARP = False
+
+
+def get_valid_gemini_models_from_api(api_key: str) -> list:
+    """Queries Google ModelService.ListModels API for valid text generation models."""
+    try:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}"
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            if resp.status == 200:
+                data = json.loads(resp.read().decode("utf-8"))
+                valid_models = []
+                for m in data.get("models", []):
+                    name = m.get("name", "").replace("models/", "")
+                    methods = m.get("supportedGenerationMethods", [])
+                    if "generateContent" in methods and not any(bad in name.lower() for bad in ["-tts", "embedding", "imagen", "bison", "aqa"]):
+                        valid_models.append(name)
+                return valid_models
+    except Exception:
+        pass
+    return []
+
+
+# =============================================================================
+# UNIVERSAL PROVIDERS ENGINE (Ollama, Gemini API, Claude API, OpenAI API)
+# =============================================================================
+
+def query_provider_ollama(prompt: str, extra_web_context: str, config: dict) -> str:
+    ollama_conf = config.get("ollama", {})
+    ollama_url = ollama_conf.get("url", OLLAMA_URL)
+    active_model = ensure_ollama_and_get_model(config)
+
+    sys_context = get_system_info()
+    full_prompt = f"[SYSTEM & USER CONTEXT]\n{sys_context}\n\n"
+    if extra_web_context:
+        full_prompt += f"[WEB SEARCH CONTEXT]\n{extra_web_context}\n\n"
+    full_prompt += f"[USER PROMPT]\n{prompt}"
+
+    payload = {
+        "model": active_model,
+        "prompt": full_prompt,
+        "system": build_system_prompt(),
+        "stream": False,
+        "keep_alive": ollama_conf.get("keep_alive", 0)
+    }
+
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        f"{ollama_url}/api/generate",
+        data=data,
+        headers={"Content-Type": "application/json"},
+        method="POST"
+    )
+
+    spinner = Spinner(f"Larp AI [Ollama/{active_model}] generating response...")
+    spinner.start()
+
+    try:
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            spinner.stop()
+            if resp.status == 200:
+                result = json.loads(resp.read().decode("utf-8"))
+                response_text = result.get("response", "").strip()
+                stop_ollama_and_free_vram()
+                return response_text
+            else:
+                stop_ollama_and_free_vram()
+                return f"{RED}Ollama Error: HTTP status {resp.status}{RESET}"
+    except Exception as e:
+        spinner.stop()
+        stop_ollama_and_free_vram()
+        return f"{RED}Ollama Connection Error: {e}{RESET}"
+
+
+def query_provider_gemini(prompt: str, extra_web_context: str, config: dict) -> str:
+    gemini_conf = config.get("gemini", {})
+    api_key = gemini_conf.get("api_key", "").strip()
+    user_model = gemini_conf.get("model", "auto").strip()
+
+    if not api_key:
+        return (f"{RED}[-] Error: Gemini API Key is not set!\n{RESET}"
+                f"{CYAN}Run {BOLD}larp config{RESET}{CYAN} to set up your API key.{RESET}")
+
+    sys_context = get_system_info()
+    full_prompt = f"[SYSTEM & USER CONTEXT]\n{sys_context}\n\n"
+    if extra_web_context:
+        full_prompt += f"[WEB SEARCH CONTEXT]\n{extra_web_context}\n\n"
+    full_prompt += f"[USER PROMPT]\n{prompt}"
+
+    payload = {
+        "system_instruction": {
+            "parts": [{"text": build_system_prompt()}]
+        },
+        "contents": [
+            {
+                "parts": [{"text": full_prompt}]
+            }
+        ]
+    }
+    data = json.dumps(payload).encode("utf-8")
+
+    spinner = Spinner(f"Larp AI [Google Gemini] generating response...")
+    spinner.start()
+
+    discovered_models = get_valid_gemini_models_from_api(api_key)
+
+    def rank_model(m_name: str) -> int:
+        name = m_name.lower()
+        if name == "gemini-1.5-flash":
+            return 0
+        elif name == "gemini-2.0-flash":
+            return 1
+        elif name == "gemini-1.5-pro":
+            return 2
+        elif "flash" in name and "preview" not in name:
+            return 3
+        elif "flash" in name:
+            return 4
+        elif "pro" in name:
+            return 5
+        return 10
+
+    if discovered_models:
+        discovered_models.sort(key=rank_model)
+
+    candidate_models = []
+    if user_model and user_model != "auto" and not any(bad in user_model.lower() for bad in ["-tts", "embedding", "imagen"]):
+        candidate_models.append(user_model)
+
+    if discovered_models:
+        candidate_models.extend(discovered_models)
+
+    fallback_defaults = ["gemini-1.5-flash", "gemini-2.0-flash", "gemini-1.5-flash-latest", "gemini-1.5-pro", "gemini-pro"]
+    candidate_models.extend(fallback_defaults)
+
+    seen = set()
+    candidate_models = [m for m in candidate_models if m and not (m in seen or seen.add(m))]
+
+    last_error = ""
+    for model in candidate_models:
+        endpoint = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
+        req = urllib.request.Request(
+            endpoint,
+            data=data,
+            headers={"Content-Type": "application/json"},
+            method="POST"
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                spinner.stop()
+                if resp.status == 200:
+                    result = json.loads(resp.read().decode("utf-8"))
+                    candidates = result.get("candidates", [])
+                    if candidates:
+                        parts = candidates[0].get("content", {}).get("parts", [])
+                        if parts:
+                            return parts[0].get("text", "").strip()
+        except urllib.error.HTTPError as e:
+            last_error = e.read().decode("utf-8", errors="ignore")
+            if e.code in [400, 404, 429, 500, 502, 503, 504]:
+                continue
+            else:
+                spinner.stop()
+                return f"{RED}Gemini API Error ({e.code}): {last_error}{RESET}"
+        except Exception as e:
+            spinner.stop()
+            return f"{RED}Gemini API Request Error: {e}{RESET}"
+
+    spinner.stop()
+    return f"{RED}Gemini API Error: None of the models {candidate_models[:4]} matched your API key.\nDetails: {last_error}{RESET}"
+
+
+def query_provider_claude(prompt: str, extra_web_context: str, config: dict) -> str:
+    claude_conf = config.get("claude", {})
+    api_key = claude_conf.get("api_key", "").strip()
+    model = claude_conf.get("model", "claude-3-5-sonnet-20241022").strip()
+
+    if not api_key:
+        return (f"{RED}[-] Error: Anthropic Claude API Key is not set!\n{RESET}"
+                f"{CYAN}Run {BOLD}larp config{RESET}{CYAN} to set up your API key.{RESET}")
+
+    sys_context = get_system_info()
+    full_prompt = f"[SYSTEM & USER CONTEXT]\n{sys_context}\n\n"
+    if extra_web_context:
+        full_prompt += f"[WEB SEARCH CONTEXT]\n{extra_web_context}\n\n"
+    full_prompt += f"[USER PROMPT]\n{prompt}"
+
+    endpoint = "https://api.anthropic.com/v1/messages"
+
+    payload = {
+        "model": model,
+        "max_tokens": 1024,
+        "system": build_system_prompt(),
+        "messages": [
+            {"role": "user", "content": full_prompt}
+        ]
+    }
+
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        endpoint,
+        data=data,
+        headers={
+            "x-api-key": api_key,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json"
+        },
+        method="POST"
+    )
+
+    spinner = Spinner(f"Larp AI [Anthropic Claude/{model}] generating response...")
+    spinner.start()
+
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            spinner.stop()
+            if resp.status == 200:
+                result = json.loads(resp.read().decode("utf-8"))
+                contents = result.get("content", [])
+                if contents:
+                    return contents[0].get("text", "").strip()
+                return f"{RED}Empty response from Claude API.{RESET}"
+            else:
+                return f"{RED}Claude API Error: HTTP status {resp.status}{RESET}"
+    except urllib.error.HTTPError as e:
+        spinner.stop()
+        err_msg = e.read().decode("utf-8", errors="ignore")
+        return f"{RED}Claude API Error ({e.code}): {err_msg}{RESET}"
+    except Exception as e:
+        spinner.stop()
+        return f"{RED}Claude API Request Error: {e}{RESET}"
+
+
+def query_provider_openai(prompt: str, extra_web_context: str, config: dict) -> str:
+    openai_conf = config.get("openai", {})
+    api_key = openai_conf.get("api_key", "").strip()
+    model = openai_conf.get("model", "gpt-4o-mini").strip()
+
+    if not api_key:
+        return (f"{RED}[-] Error: OpenAI API Key is not set!\n{RESET}"
+                f"{CYAN}Run {BOLD}larp config{RESET}{CYAN} to set up your API key.{RESET}")
+
+    sys_context = get_system_info()
+    full_prompt = f"[SYSTEM & USER CONTEXT]\n{sys_context}\n\n"
+    if extra_web_context:
+        full_prompt += f"[WEB SEARCH CONTEXT]\n{extra_web_context}\n\n"
+    full_prompt += f"[USER PROMPT]\n{prompt}"
+
+    endpoint = "https://api.openai.com/v1/chat/completions"
+
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": build_system_prompt()},
+            {"role": "user", "content": full_prompt}
+        ]
+    }
+
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        endpoint,
+        data=data,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json"
+        },
+        method="POST"
+    )
+
+    spinner = Spinner(f"Larp AI [OpenAI/{model}] generating response...")
+    spinner.start()
+
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            spinner.stop()
+            if resp.status == 200:
+                result = json.loads(resp.read().decode("utf-8"))
+                choices = result.get("choices", [])
+                if choices:
+                    return choices[0].get("message", {}).get("content", "").strip()
+                return f"{RED}Empty response from OpenAI API.{RESET}"
+            else:
+                return f"{RED}OpenAI API Error: HTTP status {resp.status}{RESET}"
+    except urllib.error.HTTPError as e:
+        spinner.stop()
+        err_msg = e.read().decode("utf-8", errors="ignore")
+        return f"{RED}OpenAI API Error ({e.code}): {err_msg}{RESET}"
+    except Exception as e:
+        spinner.stop()
+        return f"{RED}OpenAI API Request Error: {e}{RESET}"
+
+
+def query_ollama(prompt: str, extra_web_context: str = "") -> str:
+    config = load_config()
+    provider = config.get("provider", "ollama").lower()
+
+    if provider == "gemini":
+        res = query_provider_gemini(prompt, extra_web_context, config)
+    elif provider == "claude":
+        res = query_provider_claude(prompt, extra_web_context, config)
+    elif provider == "openai":
+        res = query_provider_openai(prompt, extra_web_context, config)
+    else:
+        res = query_provider_ollama(prompt, extra_web_context, config)
+
+    save_history_entry(prompt, res, provider)
+    return res
+
+
+# =============================================================================
+# LARP FETCH / NEOFETCH REPLACEMENT (`larp fetch`)
+# =============================================================================
+
+def cmd_fetch():
+    """Aesthetic pastel system informer for LarpLinux."""
+    user = os.environ.get("USER", "dotdok")
+    host = os.environ.get("HOSTNAME", "larp")
+    os_name = "LarpLinux Rolling (Arch-based)"
+    kernel = subprocess.check_output(["uname", "-sr"], text=True).strip() if shutil.which("uname") else "Linux 7.1.5-zen"
+    shell = os.environ.get("SHELL", "/bin/bash").split("/")[-1]
+    wm = os.environ.get("XDG_CURRENT_DESKTOP", "Niri / FWM (Wayland)")
+    
+    pkgs_count = "0"
+    try:
+        pkgs_count = subprocess.check_output("pacman -Qq | wc -l", shell=True, text=True).strip()
+    except Exception:
+        pass
+
+    uptime_str = "0m"
+    try:
+        with open("/proc/uptime", "r") as f:
+            up_secs = float(f.readline().split()[0])
+            mins = int(up_secs // 60)
+            hours = mins // 60
+            uptime_str = f"{hours}h {mins % 60}m"
+    except Exception:
+        pass
+
+    config = load_config()
+    ai_provider = config.get("provider", "ollama").upper()
+
+    logo = [
+        f"{PINK}   ╭────────────╮   {RESET}",
+        f"{PINK}   │    Larp    │   {RESET}",
+        f"{PINK}   │  OS Linux  │   {RESET}",
+        f"{PINK}   ╰────────────╯   {RESET}",
+        f"{CYAN}   ─── v4.0 ───     {RESET}"
+    ]
+
+    info = [
+        f"{BOLD}{PINK}{user}{RESET}@{BOLD}{CYAN}{host}{RESET}",
+        f"{GRAY}─────────────────────────────{RESET}",
+        f"{CYAN}OS:{RESET}          {WHITE}{os_name}{RESET}",
+        f"{CYAN}Kernel:{RESET}      {WHITE}{kernel}{RESET}",
+        f"{CYAN}Uptime:{RESET}      {WHITE}{uptime_str}{RESET}",
+        f"{CYAN}Packages:{RESET}    {WHITE}{pkgs_count} (pacman){RESET}",
+        f"{CYAN}Shell:{RESET}       {WHITE}{shell}{RESET}",
+        f"{CYAN}Compositor:{RESET}  {PINK}{wm}{RESET}",
+        f"{CYAN}AI Engine:{RESET}   {BOLD}{PINK}{ai_provider}{RESET}",
+        "",
+        f"{PINK}███{DEEP_PINK}███{CYAN}███{LIGHT_CYAN}███{PURPLE}███{WHITE}███{RESET}"
+    ]
+
+    print()
+    max_lines = max(len(logo), len(info))
+    for i in range(max_lines):
+        l_line = logo[i] if i < len(logo) else "                    "
+        r_line = info[i] if i < len(info) else ""
+        print(f"{l_line}   {r_line}")
+    print()
+
+
+# =============================================================================
+# AI CODE & SCRIPT GENERATOR (`larp code`)
+# =============================================================================
+
+def cmd_code(args: list):
+    """AI Code and Script Generator."""
+    print_banner()
+    if not args:
+        print(f"{CYAN}Describe the code or script you need to generate:{RESET}")
+        try:
+            prompt_in = input(" > ").strip()
+        except (KeyboardInterrupt, EOFError):
+            return
+    else:
+        prompt_in = " ".join(args)
+
+    if not prompt_in:
+        return
+
+    print(f"{CYAN}Generating code for:{RESET} {BOLD}{prompt_in}{RESET}...\n")
+    sys_p = "You are a senior Linux software developer. Write clean, optimized code with helpful comments."
+    
+    response = query_ollama(f"{sys_p}\n\nTask: {prompt_in}")
+    print_box("Generated Code", response, border_color=PINK)
+    print()
+
+
+# =============================================================================
+# AI TRANSLATOR (`larp translate` / `larp tr`)
+# =============================================================================
+
+def cmd_translate(args: list):
+    """Instant AI Text Translator."""
+    print_banner()
+    if not args:
+        print(f"{CYAN}Enter text to translate:{RESET}")
+        try:
+            text = input(" > ").strip()
+        except (KeyboardInterrupt, EOFError):
+            return
+    else:
+        text = " ".join(args)
+
+    if not text:
+        return
+
+    prompt = f"Translate the following text to English (or Russian if it is already in English). Provide only the clean translation:\n\n\"{text}\""
+    res = query_ollama(prompt)
+    print_box("Larp AI Translation", res, border_color=CYAN)
+    print()
+
+
+# =============================================================================
+# CONFIG BACKUP & SNAPSHOT (`larp backup`)
+# =============================================================================
+
+def cmd_backup():
+    """Creates a compressed archive of LarpLinux configurations."""
+    print_banner()
+    os.makedirs(BACKUPS_DIR, exist_ok=True)
+    stamp = time.strftime("%Y%m%d_%H%M%S")
+    tar_path = os.path.join(BACKUPS_DIR, f"larp-config-backup-{stamp}.tar.gz")
+
+    print(f"{CYAN}Creating backup of LarpLinux configurations...{RESET}")
+
+    targets = [
+        os.path.expanduser("~/.config/larp"),
+        os.path.expanduser("~/.config/niri"),
+        os.path.expanduser("~/.config/fwm"),
+        os.path.expanduser("~/.config/waybar"),
+        os.path.expanduser("~/.config/kitty")
+    ]
+
+    with tarfile.open(tar_path, "w:gz") as tar:
+        for t in targets:
+            if os.path.exists(t):
+                tar.add(t, arcname=os.path.basename(t))
+
+    size_mb = round(os.path.getsize(tar_path) / 1024 / 1024, 2)
+    print(f"{GREEN}[+] Backup archive created successfully!{RESET}")
+    print(f"  {CYAN}File:{RESET} {tar_path}")
+    print(f"  {CYAN}Size:{RESET} {size_mb} MB\n")
+
+
+# =============================================================================
+# SHELL ALIAS INSTALLER (`larp alias`)
+# =============================================================================
+
+def cmd_alias():
+    """Installs convenient terminal aliases into ~/.bashrc."""
+    print_banner()
+    aliases = """
+# --- LarpLinux Shortcuts ---
+alias l='larp'
+alias ld='larp do'
+alias lw='larp why'
+alias lc='larp chat'
+alias lg='larp get'
+alias lf='larp fetch'
+"""
+    bashrc = os.path.expanduser("~/.bashrc")
+    try:
+        with open(bashrc, "a", encoding="utf-8") as f:
+            f.write(aliases)
+        print(f"{GREEN}[+] Short aliases (l, ld, lw, lc, lg, lf) successfully added to ~/.bashrc!{RESET}")
+        print(f"{DIM}Run 'source ~/.bashrc' to apply changes.{RESET}\n")
+    except Exception as e:
+        print(f"{RED}[-] Error adding aliases: {e}{RESET}\n")
+
+
+# =============================================================================
+# AUTONOMOUS SHELL COPILOT (`larp do <task>`)
+# =============================================================================
+
+def cmd_do(args: list):
+    """Autonomous AI Shell Copilot — translates natural instructions into bash commands."""
+    print_banner()
+    if not args:
+        print(f"{PINK}LarpLinux Autonomous Shell Copilot!{RESET}")
+        print(f"{CYAN}Describe the terminal action you want to execute:{RESET}")
+        try:
+            task = input(" > ").strip()
+        except (KeyboardInterrupt, EOFError):
+            print("\nCancelled.")
+            return
+    else:
+        task = " ".join(args)
+
+    if not task:
+        print(f"{YELLOW}[!] Instruction cannot be empty.{RESET}")
+        return
+
+    print(f"{CYAN}AI Copilot designing command pipeline for:{RESET} {BOLD}{task}{RESET}...\n")
+
+    prompt = (
+        f"The user wants to perform the following terminal task in LarpLinux:\n\"{task}\"\n\n"
+        f"Provide a SINGLE safe and exact one-liner bash command pipeline.\n"
+        f"Do NOT output any markdown or explanation before/after! Only the one-liner command."
+    )
+
+    raw_response = query_ollama(prompt)
+    cmd = sanitize_shell_command(raw_response)
+
+    print_box("Proposed Terminal Command", f"{BOLD}{WHITE}{cmd}{RESET}", border_color=CYAN)
+    print()
+
+    try:
+        ans = input(f"{PINK}Execute this command right now? (y/N): {RESET}").strip().lower()
+        if ans in ["y", "yes", "yeah"]:
+            print(f"\n{CYAN}Running command...{RESET}\n")
+            res = subprocess.run(cmd, shell=True)
+            if res.returncode == 0:
+                print(f"\n{GREEN}[+] Command executed successfully!{RESET}\n")
+            else:
+                print(f"\n{RED}[-] Command exited with code {res.returncode}.{RESET}\n")
+    except (KeyboardInterrupt, EOFError):
+        print("\nCancelled.")
+
+
+# =============================================================================
+# SYSTEM CLEANER & OPTIMIZER (`larp clean`)
+# =============================================================================
+
+def cmd_clean():
+    """Disk cleanup and system optimization wizard."""
+    print_banner()
+    print(f"{BOLD}{PINK}LarpLinux System Cleanup & Optimization Wizard:{RESET}\n")
+
+    cleaned_items = []
+
+    try:
+        orphans = subprocess.check_output("pacman -Qtdq", shell=True, text=True, stderr=subprocess.DEVNULL).strip().splitlines()
+        if orphans:
+            print(f"  {CYAN}Found orphan packages:{RESET} {len(orphans)} ({', '.join(orphans[:5])}...)")
+            ans = input(f"  {PINK}Remove orphan packages (sudo pacman -Rns ...)? (y/N): {RESET}").strip().lower()
+            if ans in ["y", "yes", "yeah"]:
+                subprocess.run(f"sudo pacman -Rns --noconfirm {' '.join(orphans)}", shell=True)
+                cleaned_items.append("Orphan pacman packages")
+        else:
+            print(f"  {GREEN}[+] No orphan packages found.{RESET}")
+    except Exception:
+        print(f"  {GREEN}[+] No orphan packages found.{RESET}")
+
+    cache_dir = "/var/cache/pacman/pkg"
+    if os.path.exists(cache_dir):
+        try:
+            print(f"\n  {CYAN}Cleaning unneeded pacman package cache...{RESET}")
+            ans = input(f"  {PINK}Clean package cache (sudo pacman -Sc)? (y/N): {RESET}").strip().lower()
+            if ans in ["y", "yes", "yeah"]:
+                subprocess.run("sudo pacman -Sc --noconfirm", shell=True)
+                cleaned_items.append("Pacman package cache")
+        except Exception:
+            pass
+
+    print(f"\n  {CYAN}Cleaning old systemd logs (older than 7 days)...{RESET}")
+    ans = input(f"  {PINK}Vacuum journalctl logs? (y/N): {RESET}").strip().lower()
+    if ans in ["y", "yes", "yeah"]:
+        subprocess.run("sudo journalctl --vacuum-time=7d", shell=True)
+        cleaned_items.append("Journalctl logs")
+
+    user_cache = os.path.expanduser("~/.cache")
+    if os.path.exists(user_cache):
+        print(f"\n  {CYAN}Cleaning user temp cache ({user_cache})...{RESET}")
+        ans = input(f"  {PINK}Clear thumbnails and font cache? (y/N): {RESET}").strip().lower()
+        if ans in ["y", "yes", "yeah"]:
+            subprocess.run("rm -rf ~/.cache/thumbnails/* ~/.cache/fontconfig/* 2>/dev/null", shell=True)
+            cleaned_items.append("Thumbnails & font cache")
+
+    print(f"\n{GREEN}[+] Optimization complete! Cleaned: {', '.join(cleaned_items) if cleaned_items else 'system already optimal'}.{RESET}\n")
+
+
+# =============================================================================
+# AI BENCHMARK & SPEEDTEST (`larp bench`)
+# =============================================================================
+
+def cmd_bench():
+    """Benchmark speed and latency of configured AI providers."""
+    print_banner()
+    print(f"{BOLD}{PINK}LarpLinux AI Provider Benchmark & Speedtest:{RESET}\n")
+
+    config = load_config()
+    test_prompt = "Write three brief sentences highlighting key advantages of Linux."
+
+    providers_to_test = [
+        ("Ollama (Local)", "ollama", query_provider_ollama),
+        ("Google Gemini API", "gemini", query_provider_gemini),
+        ("Anthropic Claude API", "claude", query_provider_claude),
+        ("OpenAI API", "openai", query_provider_openai)
+    ]
+
+    results = []
+
+    for name, p_id, func in providers_to_test:
+        if p_id != "ollama" and not config.get(p_id, {}).get("api_key"):
+            results.append(f"  {GRAY}{name:<24}{RESET} ── {YELLOW}API key not configured{RESET}")
+            continue
+
+        start_t = time.time()
+        try:
+            resp = func(test_prompt, "", config)
+            elapsed = round(time.time() - start_t, 2)
+            if "Error" in resp or "HTTP" in resp:
+                results.append(f"  {PINK}{name:<24}{RESET} ── {RED}Response Error{RESET}")
+            else:
+                words_count = len(resp.split())
+                wps = round(words_count / elapsed, 1) if elapsed > 0 else 0
+                results.append(f"  {PINK}{BOLD}{name:<24}{RESET} ── {GREEN}{elapsed}s{RESET} ({wps} words/sec, {words_count} words)")
+        except Exception as e:
+            results.append(f"  {PINK}{name:<24}{RESET} ── {RED}Failed ({e}){RESET}")
+
+    print_box("AI Provider Speedtest Results", "\n".join(results), border_color=CYAN)
+    print()
+
+
+# =============================================================================
+# QUERY & CONVERSATION HISTORY (`larp history`)
+# =============================================================================
+
+def cmd_history():
+    """Displays prompt history and AI responses."""
+    print_banner()
+    if not os.path.exists(HISTORY_FILE):
+        print(f"{LIGHT_PINK}Query history is empty.{RESET}\n")
+        return
+
+    try:
+        with open(HISTORY_FILE, "r", encoding="utf-8") as f:
+            history = json.load(f)
+    except Exception:
+        print(f"{RED}Error reading history file.{RESET}\n")
+        return
+
+    if not history:
+        print(f"{LIGHT_PINK}Query history is empty.{RESET}\n")
+        return
+
+    print(f"{BOLD}{PINK}Recent {len(history)} Larp AI Queries:{RESET}\n")
+    lines = []
+    for idx, item in enumerate(reversed(history[:15]), 1):
+        ts = item.get("timestamp", "")
+        prov = item.get("provider", "").upper()
+        q = item.get("query", "")
+        lines.append(f" {PINK}{idx:2d}.{RESET} [{CYAN}{ts}{RESET}] ({BOLD}{prov}{RESET}) {BOLD}{q}{RESET}")
+
+    print("\n".join(lines))
+    print(f"\n{DIM}History log path: {HISTORY_FILE}{RESET}\n")
+
+
+# =============================================================================
+# INTERACTIVE CONFIG MENU (TUI)
+# =============================================================================
+
+def interactive_config_menu():
+    """Interactive step-by-step TUI settings menu."""
+    while True:
+        config = load_config()
+        curr_p = config.get("provider", "ollama").upper()
+
+        conf_lines = [
+            f"  {CYAN}Active AI Provider:{RESET}     {BOLD}{PINK}{curr_p}{RESET}",
+            f"  {CYAN}Web Search (DuckDuckGo):{RESET} {'Enabled' if config.get('web_search', True) else 'Disabled'}",
+            f"  {CYAN}Auto-Repair (No Prompt):{RESET} {'Enabled (Instant Fix)' if config.get('auto_fix', True) else 'Disabled (Ask y/N)'}\n",
+            f"  {BOLD}{PINK}1.{RESET} Switch Active AI Provider (Ollama / Gemini / Claude / OpenAI)",
+            f"  {BOLD}{PINK}2.{RESET} Configure Google Gemini API",
+            f"  {BOLD}{PINK}3.{RESET} Configure Anthropic Claude API",
+            f"  {BOLD}{PINK}4.{RESET} Configure OpenAI API",
+            f"  {BOLD}{PINK}5.{RESET} Configure Ollama (Model / URL)",
+            f"  {BOLD}{PINK}6.{RESET} Toggle Web Search (On/Off)",
+            f"  {BOLD}{PINK}7.{RESET} Toggle Auto-Repair Mode (On/Off)",
+            f"  {BOLD}{PINK}8.{RESET} Reset Configuration to Defaults",
+            f"  {BOLD}{PINK}0.{RESET} Save & Exit"
+        ]
+
+        print_banner()
+        print_box("Larp AI Interactive Config Menu", "\n".join(conf_lines), border_color=PINK)
+        print()
+
+        try:
+            choice = input(f"{PINK}{BOLD}Select an option [0-8]: {RESET}").strip()
+        except (KeyboardInterrupt, EOFError):
+            print("\nExiting configuration.")
+            break
+
+        if choice == "0":
+            print(f"\n{GREEN}[+] Configuration saved. Great job!{RESET}\n")
+            break
+
+        elif choice == "1":
+            print(f"\n{CYAN}Select active AI Provider:{RESET}")
+            print(f"  1) {PINK}Ollama{RESET} (Local Neural Network)")
+            print(f"  2) {PINK}Google Gemini API{RESET}")
+            print(f"  3) {PINK}Anthropic Claude API{RESET}")
+            print(f"  4) {PINK}OpenAI (ChatGPT) API{RESET}")
+            p_ans = input("Your choice [1-4]: ").strip()
+            p_map = {"1": "ollama", "2": "gemini", "3": "claude", "4": "openai"}
+            if p_ans in p_map:
+                config["provider"] = p_map[p_ans]
+                save_config(config)
+
+        elif choice == "2":
+            print(f"\n{CYAN}─── Configure Google Gemini API ───{RESET}")
+            key = input(f"Enter Gemini API Key (Enter to keep current): ").strip()
+            if key:
+                config["gemini"]["api_key"] = key
+            model = input(f"Gemini Model [{config['gemini']['model']} / 'auto']: ").strip()
+            if model:
+                config["gemini"]["model"] = model
+            save_config(config)
+
+        elif choice == "3":
+            print(f"\n{CYAN}─── Configure Anthropic Claude API ───{RESET}")
+            key = input(f"Enter Claude API Key (Enter to keep current): ").strip()
+            if key:
+                config["claude"]["api_key"] = key
+            model = input(f"Claude Model [{config['claude']['model']}]: ").strip()
+            if model:
+                config["claude"]["model"] = model
+            save_config(config)
+
+        elif choice == "4":
+            print(f"\n{CYAN}─── Configure OpenAI API ───{RESET}")
+            key = input(f"Enter OpenAI API Key (Enter to keep current): ").strip()
+            if key:
+                config["openai"]["api_key"] = key
+            model = input(f"OpenAI Model [{config['openai']['model']}]: ").strip()
+            if model:
+                config["openai"]["model"] = model
+            save_config(config)
+
+        elif choice == "5":
+            print(f"\n{CYAN}─── Configure Ollama ───{RESET}")
+            url = input(f"Ollama URL [{config['ollama']['url']}]: ").strip()
+            if url:
+                config["ollama"]["url"] = url
+            model = input(f"Ollama Model [{config['ollama']['model']}]: ").strip()
+            if model:
+                config["ollama"]["model"] = model
+            save_config(config)
+
+        elif choice == "6":
+            config["web_search"] = not config.get("web_search", True)
+            save_config(config)
+            print(f"{GREEN}Web Search toggled to: {config['web_search']}{RESET}")
+
+        elif choice == "7":
+            config["auto_fix"] = not config.get("auto_fix", True)
+            save_config(config)
+            print(f"{GREEN}Auto-Repair toggled to: {config['auto_fix']}{RESET}")
+
+        elif choice == "8":
+            save_config(DEFAULT_CONFIG)
+            print(f"{GREEN}Configuration reset to default settings!{RESET}")
+
+        time.sleep(0.5)
+
+
+def cmd_config(args: list):
+    if not args:
+        interactive_config_menu()
+        return
+
+    subcmd = args[0].lower()
+    config = load_config()
+
+    if subcmd in ["show", "get", "list"]:
+        interactive_config_menu()
+    elif subcmd == "set" and len(args) >= 3:
+        key_path = args[1].lower()
+        val = args[2]
+
+        keys = key_path.split(".")
+        if len(keys) == 1:
+            if keys[0] == "provider":
+                if val.lower() not in ["ollama", "gemini", "claude", "openai"]:
+                    print(f"{RED}[-] Valid providers: ollama, gemini, claude, openai{RESET}")
+                    return
+                config["provider"] = val.lower()
+            elif keys[0] == "web_search":
+                config["web_search"] = val.lower() in ["true", "1", "yes", "on"]
+            elif keys[0] == "auto_fix":
+                config["auto_fix"] = val.lower() in ["true", "1", "yes", "on"]
+            else:
+                config[keys[0]] = val
+        elif len(keys) == 2:
+            section, item = keys[0], keys[1]
+            if section in config and isinstance(config[section], dict):
+                config[section][item] = val
+            else:
+                print(f"{RED}[-] Unknown config section: {section}{RESET}")
+                return
+
+        save_config(config)
+
+    elif subcmd == "reset":
+        save_config(DEFAULT_CONFIG)
+        print(f"{GREEN}[+] Settings reset to defaults!{RESET}")
+    else:
+        interactive_config_menu()
+
+
+def make_bar(percent: float, length: int = 20) -> str:
+    filled = int(round(length * percent / 100))
+    bar = "█" * filled + "░" * (length - filled)
+    return f"{PINK}{bar}{RESET} {percent:.1f}%"
+
+
+def cmd_status():
+    print_banner()
+    print(f"{BOLD}{PINK}LarpLinux System Radar & Hardware Diagnostics:{RESET}\n")
+    config = load_config()
+
+    sys_info = []
+
+    try:
+        load = os.getloadavg()[0]
+        cores = os.cpu_count() or 1
+        cpu_pct = min(100.0, round((load / cores) * 100, 1))
+        sys_info.append(f"  {CYAN}CPU Usage:{RESET}      [{make_bar(cpu_pct)}] (Load: {load})")
+    except Exception:
+        pass
+
+    try:
+        with open("/proc/meminfo", "r") as f:
+            lines = f.readlines()
+            total = int(lines[0].split()[1])
+            avail = int(lines[2].split()[1])
+            used = total - avail
+            ram_pct = round((used / total) * 100, 1)
+            sys_info.append(f"  {CYAN}RAM Usage:{RESET}      [{make_bar(ram_pct)}] ({round(used/1048576, 1)}GB / {round(total/1048576, 1)}GB)")
+    except Exception:
+        pass
+
+    try:
+        st = os.statvfs("/")
+        total_disk = st.f_blocks * st.f_frsize
+        free_disk = st.f_bavail * st.f_frsize
+        used_disk = total_disk - free_disk
+        disk_pct = round((used_disk / total_disk) * 100, 1)
+        sys_info.append(f"  {CYAN}Disk Usage (/):{RESET} [{make_bar(disk_pct)}] ({round(used_disk/1073741824, 1)}GB / {round(total_disk/1073741824, 1)}GB)")
+    except Exception:
+        pass
+
+    wm_info = os.environ.get("XDG_CURRENT_DESKTOP", "Niri/FWM (Wayland)")
+    sys_info.append(f"  {CYAN}Compositor:{RESET}     {PINK}{wm_info}{RESET}")
+
+    current_provider = config.get("provider", "ollama").upper()
+    sys_info.append(f"  {CYAN}Active AI:{RESET}      {BOLD}{PINK}{current_provider}{RESET}")
+
+    if current_provider == "OLLAMA":
+        ollama_ok = check_ollama_status(config['ollama']['url'])
+        ollama_status = f"{GREEN}● Active{RESET}" if ollama_ok else f"{GRAY}○ Stopped (VRAM Freed){RESET}"
+        sys_info.append(f"  {CYAN}Ollama Daemon:{RESET}  {ollama_status}")
+        if ollama_ok:
+            models = get_available_ollama_models(config['ollama']['url'])
+            model_str = ", ".join(models) if models else "none"
+            sys_info.append(f"  {CYAN}AI Models:{RESET}      {LIGHT_PINK}{model_str}{RESET}")
+
+    print_box("Larp System Radar", "\n".join(sys_info), border_color=CYAN)
+    print()
+
+
+def cmd_monitor():
+    """Live interactive real-time system resource monitor."""
+    print("\033[2J\033[H", end="")
+    try:
+        while True:
+            sys.stdout.write("\033[H")
+            cmd_status()
+            print(f"{DIM}Press Ctrl+C to exit monitor...{RESET}")
+            time.sleep(2)
+    except KeyboardInterrupt:
+        print(f"\n{CYAN}Exiting monitor.{RESET}\n")
+
+
+def cmd_chat():
+    print_banner()
+    config = load_config()
+    provider_name = config.get("provider", "ollama").upper()
+    print_box("Larp AI Interactive Session", f"{PINK}Interactive Larp AI Session ({provider_name})!{RESET}\n{DIM}Type 'exit' or 'quit' to leave session.{RESET}\n{CYAN}All answers tailored specifically for LarpLinux.{RESET}")
+    print()
+
+    history = []
+
+    while True:
+        try:
+            user_input = input(f"{PINK}{BOLD}You > {RESET}").strip()
+        except (KeyboardInterrupt, EOFError):
+            print(f"\n{CYAN}Goodbye!{RESET}")
+            break
+
+        if not user_input:
+            continue
+
+        if user_input.lower() in ["exit", "quit"]:
+            print(f"{CYAN}Goodbye!{RESET}")
+            break
+
+        fix_triggers = [
+            "fix", "repair", "fix my system", "repair errors", "fix system", "fix errors",
+            "почини", "починить", "исправь", "исправить", "отремонтируй", "фикс"
+        ]
+
+        if any(trig in user_input.lower() for trig in fix_triggers):
+            print(f"\n{CYAN}[Larp Auto-Repair Engine]{RESET} {PINK}Scanning system logs & applying fixes...{RESET}\n")
+            cmd_fix(["auto"])
+            history.append(f"User: {user_input}")
+            history.append(f"Larp AI: [Executed journalctl diagnostics and automatically repaired system issues]")
+            continue
+
+        history.append(f"User: {user_input}")
+
+        web_ctx = get_full_web_context(user_input)
+
+        if any(kw in user_input.lower() for kw in ["error", "issue", "problem", "journalctl", "log", "ошибк", "проблем", "лог"]):
+            try:
+                res = subprocess.run(["journalctl", "-p", "3", "-n", "15", "--no-pager"], capture_output=True, text=True, check=False)
+                logs_ctx = res.stdout.strip()
+                if logs_ctx:
+                    web_ctx += f"\n\n[LIVE JOURNALCTL CRITICAL SYSTEM LOGS]:\n{logs_ctx}"
+            except Exception:
+                pass
+
+        prompt_with_history = "\n".join(history[-6:])
+
+        response = query_ollama(prompt_with_history, extra_web_context=web_ctx)
+        history.append(f"Larp AI: {response}")
+
+        print_box(f"Larp AI ({provider_name})", response, border_color=PINK)
+        print()
+
+
+def cmd_help():
+    print_banner()
+    config = load_config()
+    active_p = config.get("provider", "ollama").upper()
+
+    print(f"{BOLD}{PINK}Usage:{RESET}")
+    print(f"  {CYAN}larp{RESET} <command> [arguments]\n")
+    print(f"{BOLD}{PINK}Available Commands (19 Integrated Modules):{RESET}")
+    print(f"  {PINK}{BOLD}fetch{RESET}                {DIM}Aesthetic system informer (Larp Neofetch){RESET}")
+    print(f"  {PINK}{BOLD}do{RESET} {CYAN}<task>{RESET}           {DIM}Autonomous AI Terminal Copilot — translates tasks to shell pipelines{RESET}")
+    print(f"  {PINK}{BOLD}code{RESET} {CYAN}<task>{RESET}         {DIM}AI Code and script generator{RESET}")
+    print(f"  {PINK}{BOLD}translate{RESET} {CYAN}<text>{RESET}      {DIM}Instant AI multilingual translator{RESET}")
+    print(f"  {PINK}{BOLD}config{RESET}               {DIM}Interactive provider configuration TUI menu{RESET}")
+    print(f"  {PINK}{BOLD}clean{RESET}                {DIM}Disk cleanup — pacman cache, journalctl logs & orphans{RESET}")
+    print(f"  {PINK}{BOLD}backup{RESET}               {DIM}Snapshot & config backup manager (niri, fwm, waybar, larp){RESET}")
+    print(f"  {PINK}{BOLD}alias{RESET}                {DIM}Install short terminal shortcuts (l, ld, lw, lc, lg, lf) into ~/.bashrc{RESET}")
+    print(f"  {PINK}{BOLD}bench{RESET}                {DIM}Speedtest & latency benchmark for all AI providers{RESET}")
+    print(f"  {PINK}{BOLD}status{RESET}               {DIM}System radar — CPU/RAM/Disk loads & active AI engine{RESET}")
+    print(f"  {PINK}{BOLD}monitor{RESET}              {DIM}Live real-time interactive system dashboard{RESET}")
+    print(f"  {PINK}{BOLD}history{RESET}              {DIM}View recent Larp AI prompt & response logs{RESET}")
+    print(f"  {PINK}{BOLD}chat{RESET}                 {DIM}Terminal interactive conversation session with Larp AI{RESET}")
+    print(f"  {PINK}{BOLD}why{RESET} {CYAN}<query>{RESET}         {DIM}Query solver using AI [{active_p}] + Live Web & Arch DB Search{RESET}")
+    print(f"  {PINK}{BOLD}fix{RESET}                  {DIM}System log error diagnoser with 1-click Auto-Repair Engine{RESET}")
+    print(f"  {PINK}{BOLD}get{RESET} {CYAN}<package>{RESET}        {DIM}Install software pack or recipe from Larp-Repo{RESET}")
+    print(f"  {PINK}{BOLD}get-list{RESET}             {DIM}Registry of all available LarpLinux software packs{RESET}")
+    print(f"  {PINK}{BOLD}get-create{RESET} {CYAN}<task>{RESET}   {DIM}AI Pack Architect with live Arch/AUR package validation{RESET}")
+    print(f"  {PINK}{BOLD}help{RESET}                 {DIM}Display this help menu{RESET}")
+    print()
+
+
+def cmd_get_list():
+    print_banner()
+    recipes = get_all_recipes()
+    print(f"{BOLD}{PINK}Available Software Recipes & Packs (Larp-Repo & Custom):{RESET}\n")
+    for name, info in recipes.items():
+        tag = f"{LIGHT_PINK}[Custom]{RESET} " if name in load_custom_recipes() else ""
+        print(f"  {PINK}{BOLD}{name:<14}{RESET} {CYAN}─{RESET} {tag}{info['desc']}")
+        print(f"  {DIM}                Command: {info['cmd']}{RESET}\n")
+    print(f"{DIM}To install execute: {RESET}{CYAN}larp get <package_name>{RESET}\n")
+
+
+def cmd_get_create(args: list):
+    print_banner()
+    if not args:
+        print(f"{PINK}LarpLinux AI Pack Architect with Web Access!{RESET}")
+        print(f"{CYAN}Describe the software pack you need to construct:{RESET}")
+        try:
+            task_desc = input(" > ").strip()
+        except (KeyboardInterrupt, EOFError):
+            print("\nCancelled.")
+            sys.exit(0)
+    else:
+        task_desc = " ".join(args)
+
+    if not task_desc:
+        print(f"{YELLOW}[!] Task description cannot be empty.{RESET}")
+        sys.exit(1)
+
+    print(f"\n{CYAN}Searching Arch Linux & AUR repositories for:{RESET} {BOLD}{task_desc}{RESET}...")
+    web_context = get_full_web_context(task_desc)
+
+    print(f"{CYAN}Designing verified package suite...{RESET}\n")
+
+    prompt = (
+        f"The user wants to create a software pack for the task:\n\"{task_desc}\"\n\n"
+        f"RULES:\n"
+        f"1. Choose ONLY real, existing Arch Linux / AUR packages.\n"
+        f"2. Give a brief explanation (2 sentences).\n"
+        f"3. Provide a single installation command: `sudo pacman -S --needed <packages>`\n"
+        f"4. End response with: PACK_NAME: <short-pack-name>"
+    )
+
+    response = query_ollama(prompt, extra_web_context=web_context)
+
+    cmd_to_run = ""
+    suggested_name = "custom-pack"
+    
+    clean_lines = []
+    for line in response.splitlines():
+        if line.startswith("PACK_NAME:"):
+            parsed = line.replace("PACK_NAME:", "").strip().lower()
+            if parsed and parsed not in ["makefile", "bash", "sh"]:
+                suggested_name = parsed
+            continue
+
+        if any(token in line for token in ["sudo pacman", "curl", "yay", "paru"]):
+            clean_line = sanitize_shell_command(line)
+            extracted = re.sub(r'^.*?(sudo pacman|curl|yay|paru)', r'\1', clean_line)
+            if not cmd_to_run:
+                cmd_to_run = sanitize_shell_command(extracted)
+
+        clean_lines.append(line)
+
+    print_box("Package Pack Blueprint (Larp AI + Web)", "\n".join(clean_lines), border_color=PINK)
+    print()
+
+    if cmd_to_run:
+        cmd_to_run = sanitize_shell_command(cmd_to_run)
+        print(f"{CYAN}Proposed installation command:{RESET}\n  {BOLD}{cmd_to_run}{RESET}\n")
+        try:
+            ans = input(f"{PINK}Execute installation for '{suggested_name}' right now? (y/N): {RESET}").strip().lower()
+            if ans in ["y", "yes", "yeah"]:
+                print(f"\n{CYAN}Running installation...{RESET}\n")
+                res = subprocess.run(cmd_to_run, shell=True)
+                if res.returncode == 0:
+                    print(f"\n{GREEN}[+] Pack '{suggested_name}' installed successfully!{RESET}")
+                else:
+                    print(f"\n{RED}[-] Installation failed.{RESET}")
+
+            save_ans = input(f"\n{PINK}Save recipe '{suggested_name}' to your permanent collection (larp get {suggested_name})? (y/N): {RESET}").strip().lower()
+            if save_ans in ["y", "yes", "yeah"]:
+                save_custom_recipe(suggested_name, f"Custom Pack: {task_desc}", cmd_to_run)
+
+        except (KeyboardInterrupt, EOFError):
+            print("\nCancelled.")
+
+
+def cmd_why(args: list):
+    if not args:
+        print(f"{YELLOW}[!] Specify a question for larp why.{RESET}")
+        print(f"   {DIM}Example: larp why is wayland smooth?{RESET}")
+        sys.exit(1)
+
+    question = " ".join(args)
+    print_banner()
+    print(f"{BOLD}{CYAN}Question:{RESET} {question}\n")
+
+    print(f"{CYAN}Searching Web & Arch Repositories (DuckDuckGo + Arch DB)...{RESET}")
+    web_context = get_full_web_context(question)
+
+    response = query_ollama(question, extra_web_context=web_context)
+    config = load_config()
+    p_name = config.get("provider", "ollama").upper()
+    print_box(f"Larp AI [{p_name}] (Web-Search Enabled)", response, border_color=PINK)
+    print()
+
+
+def cmd_fix(args: list = None):
+    print_banner()
+    print(f"{CYAN}Reading recent critical system logs (journalctl -p 3 -n 20)...{RESET}\n")
+
+    try:
+        cmd = ["journalctl", "-p", "3", "-n", "20", "--no-pager"]
+        res = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        logs = res.stdout.strip()
+    except Exception as e:
+        print(f"{RED}[-] Error executing journalctl: {e}{RESET}")
+        sys.exit(1)
+
+    if not logs:
+        print(f"{GREEN}[+] No critical system errors (priority <= 3) found in journalctl! System is stable.{RESET}\n")
+        return
+
+    prompt = (
+        f"Here are the 20 most recent critical system logs from LarpLinux (journalctl -p 3 -n 20):\n\n"
+        f"```\n{logs}\n```\n\n"
+        f"1. Explain the root cause in 2-3 brief sentences.\n"
+        f"2. Provide an exact one-liner bash resolution command formatted as: FIX_CMD: <fix_command>"
+    )
+
+    response = query_ollama(prompt)
+    config = load_config()
+    p_name = config.get("provider", "ollama").upper()
+
+    clean_lines = []
+    cmd_to_fix = ""
+
+    for line in response.splitlines():
+        if "FIX_CMD:" in line:
+            extracted = line.split("FIX_CMD:")[1].strip()
+            cmd_to_fix = sanitize_shell_command(extracted)
+            continue
+        elif any(token in line for token in ["sudo systemctl", "sudo pacman", "systemctl restart", "sudo rm", "sudo chmod", "sudo sed"]):
+            clean_line = sanitize_shell_command(line)
+            extracted = re.sub(r'^.*?(sudo systemctl|systemctl|sudo pacman|sudo rm|sudo chmod|sudo sed)', r'\1', clean_line)
+            if not cmd_to_fix:
+                cmd_to_fix = sanitize_shell_command(extracted)
+        clean_lines.append(line)
+
+    if cmd_to_fix:
+        cmd_to_fix = sanitize_shell_command(cmd_to_fix)
+
+    print_box(f"Diagnostics & Resolution [{p_name}]", "\n".join(clean_lines), border_color=PINK)
+    print()
+
+    if cmd_to_fix:
+        print(f"{CYAN}Proposed automatic repair command:{RESET}\n  {BOLD}{cmd_to_fix}{RESET}\n")
+        auto_yes = (args and any(a in ["-y", "--yes", "auto"] for a in args)) or config.get("auto_fix", True)
+        try:
+            if not auto_yes:
+                ans = input(f"{PINK}Execute automatic repair right now? (y/N): {RESET}").strip().lower()
+                should_run = ans in ["y", "yes", "yeah"]
+            else:
+                print(f"{GREEN}[Auto-Repair Engine] Auto-Repair enabled in configuration. Applying fixes instantly...{RESET}")
+                should_run = True
+
+            if should_run:
+                print(f"\n{CYAN}Executing repair command...{RESET}\n")
+                res = subprocess.run(cmd_to_fix, shell=True)
+                if res.returncode == 0:
+                    print(f"\n{GREEN}[+] System repair applied successfully!{RESET}\n")
+                else:
+                    print(f"\n{RED}[-] Repair command exited with code {res.returncode}.{RESET}\n")
+        except (KeyboardInterrupt, EOFError):
+            print("\nCancelled.")
+
+
+def cmd_get(args: list):
+    if not args or args[0] in ["--list", "-l", "list"]:
+        cmd_get_list()
+        return
+
+    pkg_name = args[0].lower()
+    print_banner()
+    recipes = get_all_recipes()
+
+    if pkg_name in recipes:
+        recipe = recipes[pkg_name]
+        cmd_str = recipe["cmd"]
+        desc = recipe["desc"]
+
+        print(f"{PINK}[Larp-Repo]{RESET} {CYAN}Running build recipe:{RESET} {BOLD}{pkg_name}{RESET} ({desc})")
+        print(f"{DIM}Executing command: {cmd_str}{RESET}\n")
+        try:
+            res = subprocess.run(cmd_str, shell=True)
+            if res.returncode == 0:
+                print(f"\n{GREEN}[+] Recipe '{pkg_name}' installed successfully!{RESET}\n")
+            else:
+                print(f"\n{RED}[-] Error installing package '{pkg_name}' (exit code: {res.returncode}){RESET}\n")
+        except Exception as e:
+            print(f"\n{RED}[-] Execution error: {e}{RESET}\n")
+    else:
+        print(f"{PINK}[Larp-Repo]{RESET} {CYAN}Searching recipe registry for:{RESET} {BOLD}{pkg_name}{RESET}")
+        print(f"{DIM}─── Scanning official LarpLinux repository...{RESET}")
+        time.sleep(0.3)
+        print(f"\n{LIGHT_PINK}Recipe '{pkg_name}' not found in Larp-Repo registry.{RESET}")
+        print(f"{DIM}You can generate it automatically using: {RESET}{CYAN}larp get-create {pkg_name}{RESET}\n")
+
+
+def main():
+    if len(sys.argv) < 2:
+        cmd_help()
+        sys.exit(0)
+
+    subcommand = sys.argv[1].lower()
+    args = sys.argv[2:]
+
+    if subcommand in ["help", "-h", "--help"]:
+        cmd_help()
+    elif subcommand in ["fetch", "neofetch"]:
+        cmd_fetch()
+    elif subcommand in ["code", "script"]:
+        cmd_code(args)
+    elif subcommand in ["translate", "tr"]:
+        cmd_translate(args)
+    elif subcommand in ["backup", "snapshot"]:
+        cmd_backup()
+    elif subcommand in ["alias", "setup-aliases"]:
+        cmd_alias()
+    elif subcommand == "config":
+        cmd_config(args)
+    elif subcommand == "do":
+        cmd_do(args)
+    elif subcommand == "clean":
+        cmd_clean()
+    elif subcommand in ["bench", "benchmark", "speedtest"]:
+        cmd_bench()
+    elif subcommand in ["history", "hist", "logs"]:
+        cmd_history()
+    elif subcommand == "status":
+        cmd_status()
+    elif subcommand in ["monitor", "top"]:
+        cmd_monitor()
+    elif subcommand == "chat":
+        cmd_chat()
+    elif subcommand == "why":
+        cmd_why(args)
+    elif subcommand == "fix":
+        cmd_fix(args)
+    elif subcommand == "get":
+        cmd_get(args)
+    elif subcommand in ["get-list", "list", "packs"]:
+        cmd_get_list()
+    elif subcommand in ["get-create", "create-pack", "create"]:
+        cmd_get_create(args)
+    else:
+        print(f"{RED}[-] Unknown command: '{subcommand}'{RESET}\n")
+        cmd_help()
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
