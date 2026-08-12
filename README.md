@@ -112,6 +112,20 @@ Get a key at [openrouter.ai/keys](https://openrouter.ai/keys). The default model
 
 ---
 
+## 🧪 Running the tests
+
+The suite uses only the standard library, like larp itself — no pytest, no
+`pip install`:
+
+```bash
+python3 -m unittest discover -s tests -v
+```
+
+Tests for optional features are skipped when the feature is absent, so the suite
+runs unchanged on any branch.
+
+---
+
 ## 📄 License
 
 Distributed under the **MIT License**. See [LICENSE](LICENSE) for details.
