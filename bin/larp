@@ -70,8 +70,14 @@ DEFAULT_CONFIG = {
     "openai": {
         "api_key": "",
         "model": "gpt-4o-mini"
+    },
+    "openrouter": {
+        "api_key": "",
+        "model": "anthropic/claude-sonnet-5"
     }
 }
+
+OPENROUTER_URL = "https://openrouter.ai/api/v1"
 
 KNOWN_RECIPES = {
     "fwm": {
@@ -936,6 +942,103 @@ def query_provider_openai(prompt: str, extra_web_context: str, config: dict) -> 
         return f"{RED}OpenAI API Request Error: {e}{RESET}"
 
 
+def get_openrouter_models(api_key: str = "") -> list:
+    """Fetches the list of model IDs available on OpenRouter (public endpoint, key optional)."""
+    try:
+        req = urllib.request.Request(f"{OPENROUTER_URL}/models", method="GET")
+        if api_key:
+            req.add_header("Authorization", f"Bearer {api_key}")
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            return sorted(m.get("id", "") for m in data.get("data", []) if m.get("id"))
+    except Exception:
+        return []
+
+
+def query_provider_openrouter(prompt: str, extra_web_context: str, config: dict) -> str:
+    """OpenRouter — one API key for Claude, Gemini, GPT, Llama and ~400 other models.
+
+    The API is OpenAI-compatible, so the payload matches query_provider_openai();
+    only the endpoint, the auth header and the namespaced model IDs differ.
+    """
+    openrouter_conf = config.get("openrouter", {})
+    api_key = openrouter_conf.get("api_key", "").strip()
+    model = openrouter_conf.get("model", "anthropic/claude-sonnet-5").strip()
+
+    if not api_key:
+        return (f"{RED}[-] Error: OpenRouter API Key is not set!\n{RESET}"
+                f"{CYAN}Run {BOLD}larp config{RESET}{CYAN} to set up your API key.{RESET}\n"
+                f"{DIM}Get one at https://openrouter.ai/keys{RESET}")
+
+    sys_context = get_system_info()
+    full_prompt = f"[SYSTEM & USER CONTEXT]\n{sys_context}\n\n"
+    if extra_web_context:
+        full_prompt += f"[WEB SEARCH CONTEXT]\n{extra_web_context}\n\n"
+    full_prompt += f"[USER PROMPT]\n{prompt}"
+
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": build_system_prompt()},
+            {"role": "user", "content": full_prompt}
+        ]
+    }
+
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        f"{OPENROUTER_URL}/chat/completions",
+        data=data,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            # Optional attribution headers — they place larp on OpenRouter's
+            # app leaderboard and are ignored if the app is unknown.
+            "HTTP-Referer": "https://github.com/dotdok132/LarpHelper",
+            "X-Title": "LarpHelper"
+        },
+        method="POST"
+    )
+
+    spinner = Spinner(f"Larp AI [OpenRouter/{model}] generating response...")
+    spinner.start()
+
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            spinner.stop()
+            if resp.status == 200:
+                result = json.loads(resp.read().decode("utf-8"))
+                # OpenRouter surfaces upstream provider failures as a 200 with an
+                # "error" object instead of "choices" — report it rather than
+                # printing an empty response.
+                if "error" in result and not result.get("choices"):
+                    err = result["error"]
+                    msg = err.get("message", err) if isinstance(err, dict) else err
+                    return f"{RED}OpenRouter Error: {msg}{RESET}"
+                choices = result.get("choices", [])
+                if choices:
+                    return choices[0].get("message", {}).get("content", "").strip()
+                return f"{RED}Empty response from OpenRouter.{RESET}"
+            else:
+                return f"{RED}OpenRouter Error: HTTP status {resp.status}{RESET}"
+    except urllib.error.HTTPError as e:
+        spinner.stop()
+        err_msg = e.read().decode("utf-8", errors="ignore")
+        if e.code == 401:
+            return (f"{RED}OpenRouter Error (401): invalid or expired API key.{RESET}\n"
+                    f"{CYAN}Check it with {BOLD}larp config{RESET}{CYAN} or generate a new one at https://openrouter.ai/keys{RESET}")
+        if e.code == 402:
+            return (f"{RED}OpenRouter Error (402): insufficient credits for model '{model}'.{RESET}\n"
+                    f"{CYAN}Top up at https://openrouter.ai/credits, or switch to a cheaper model:{RESET}\n"
+                    f"  {BOLD}larp config set openrouter.model <model-id>{RESET}")
+        if e.code == 404:
+            return (f"{RED}OpenRouter Error (404): model '{model}' does not exist.{RESET}\n"
+                    f"{CYAN}List available models with {BOLD}larp config models{RESET}")
+        return f"{RED}OpenRouter Error ({e.code}): {err_msg}{RESET}"
+    except Exception as e:
+        spinner.stop()
+        return f"{RED}OpenRouter Request Error: {e}{RESET}"
+
+
 def query_ollama(prompt: str, extra_web_context: str = "") -> str:
     config = load_config()
     provider = config.get("provider", "ollama").lower()
@@ -946,6 +1049,8 @@ def query_ollama(prompt: str, extra_web_context: str = "") -> str:
         res = query_provider_claude(prompt, extra_web_context, config)
     elif provider == "openai":
         res = query_provider_openai(prompt, extra_web_context, config)
+    elif provider == "openrouter":
+        res = query_provider_openrouter(prompt, extra_web_context, config)
     else:
         res = query_provider_ollama(prompt, extra_web_context, config)
 
@@ -1293,13 +1398,21 @@ def cmd_bench():
         ("Ollama (Local)", "ollama", query_provider_ollama),
         ("Google Gemini API", "gemini", query_provider_gemini),
         ("Anthropic Claude API", "claude", query_provider_claude),
-        ("OpenAI API", "openai", query_provider_openai)
+        ("OpenAI API", "openai", query_provider_openai),
+        ("OpenRouter", "openrouter", query_provider_openrouter)
     ]
 
     results = []
 
     for name, p_id, func in providers_to_test:
-        if p_id != "ollama" and not config.get(p_id, {}).get("api_key"):
+        if p_id == "ollama":
+            # ensure_ollama_and_get_model() calls sys.exit(1) when the daemon
+            # can't be reached, which would abort the whole benchmark before the
+            # API providers are ever tried. Skip it instead.
+            if not check_ollama_status(config.get("ollama", {}).get("url", OLLAMA_URL)):
+                results.append(f"  {GRAY}{name:<24}{RESET} ── {YELLOW}Daemon not running{RESET}")
+                continue
+        elif not config.get(p_id, {}).get("api_key"):
             results.append(f"  {GRAY}{name:<24}{RESET} ── {YELLOW}API key not configured{RESET}")
             continue
 
@@ -1368,14 +1481,15 @@ def interactive_config_menu():
             f"  {CYAN}Active AI Provider:{RESET}     {BOLD}{PINK}{curr_p}{RESET}",
             f"  {CYAN}Web Search (DuckDuckGo):{RESET} {'Enabled' if config.get('web_search', True) else 'Disabled'}",
             f"  {CYAN}Auto-Repair (No Prompt):{RESET} {'Enabled (Instant Fix)' if config.get('auto_fix', True) else 'Disabled (Ask y/N)'}\n",
-            f"  {BOLD}{PINK}1.{RESET} Switch Active AI Provider (Ollama / Gemini / Claude / OpenAI)",
+            f"  {BOLD}{PINK}1.{RESET} Switch Active AI Provider (Ollama / Gemini / Claude / OpenAI / OpenRouter)",
             f"  {BOLD}{PINK}2.{RESET} Configure Google Gemini API",
             f"  {BOLD}{PINK}3.{RESET} Configure Anthropic Claude API",
             f"  {BOLD}{PINK}4.{RESET} Configure OpenAI API",
-            f"  {BOLD}{PINK}5.{RESET} Configure Ollama (Model / URL)",
-            f"  {BOLD}{PINK}6.{RESET} Toggle Web Search (On/Off)",
-            f"  {BOLD}{PINK}7.{RESET} Toggle Auto-Repair Mode (On/Off)",
-            f"  {BOLD}{PINK}8.{RESET} Reset Configuration to Defaults",
+            f"  {BOLD}{PINK}5.{RESET} Configure OpenRouter (one key, ~400 models)",
+            f"  {BOLD}{PINK}6.{RESET} Configure Ollama (Model / URL)",
+            f"  {BOLD}{PINK}7.{RESET} Toggle Web Search (On/Off)",
+            f"  {BOLD}{PINK}8.{RESET} Toggle Auto-Repair Mode (On/Off)",
+            f"  {BOLD}{PINK}9.{RESET} Reset Configuration to Defaults",
             f"  {BOLD}{PINK}0.{RESET} Save & Exit"
         ]
 
@@ -1384,7 +1498,7 @@ def interactive_config_menu():
         print()
 
         try:
-            choice = input(f"{PINK}{BOLD}Select an option [0-8]: {RESET}").strip()
+            choice = input(f"{PINK}{BOLD}Select an option [0-9]: {RESET}").strip()
         except (KeyboardInterrupt, EOFError):
             print("\nExiting configuration.")
             break
@@ -1399,8 +1513,9 @@ def interactive_config_menu():
             print(f"  2) {PINK}Google Gemini API{RESET}")
             print(f"  3) {PINK}Anthropic Claude API{RESET}")
             print(f"  4) {PINK}OpenAI (ChatGPT) API{RESET}")
-            p_ans = input("Your choice [1-4]: ").strip()
-            p_map = {"1": "ollama", "2": "gemini", "3": "claude", "4": "openai"}
+            print(f"  5) {PINK}OpenRouter{RESET} (one key for Claude / Gemini / GPT / Llama ...)")
+            p_ans = input("Your choice [1-5]: ").strip()
+            p_map = {"1": "ollama", "2": "gemini", "3": "claude", "4": "openai", "5": "openrouter"}
             if p_ans in p_map:
                 config["provider"] = p_map[p_ans]
                 save_config(config)
@@ -1436,6 +1551,20 @@ def interactive_config_menu():
             save_config(config)
 
         elif choice == "5":
+            print(f"\n{CYAN}─── Configure OpenRouter ───{RESET}")
+            print(f"{DIM}One API key for Claude, Gemini, GPT, Llama and ~400 other models.{RESET}")
+            print(f"{DIM}Get a key at https://openrouter.ai/keys{RESET}")
+            key = input(f"Enter OpenRouter API Key (Enter to keep current): ").strip()
+            if key:
+                config["openrouter"]["api_key"] = key
+            print(f"{DIM}Model IDs are namespaced, e.g. anthropic/claude-sonnet-5, google/gemini-2.5-flash.{RESET}")
+            print(f"{DIM}Run 'larp config models' to browse the full list.{RESET}")
+            model = input(f"OpenRouter Model [{config['openrouter']['model']}]: ").strip()
+            if model:
+                config["openrouter"]["model"] = model
+            save_config(config)
+
+        elif choice == "6":
             print(f"\n{CYAN}─── Configure Ollama ───{RESET}")
             url = input(f"Ollama URL [{config['ollama']['url']}]: ").strip()
             if url:
@@ -1445,21 +1574,50 @@ def interactive_config_menu():
                 config["ollama"]["model"] = model
             save_config(config)
 
-        elif choice == "6":
+        elif choice == "7":
             config["web_search"] = not config.get("web_search", True)
             save_config(config)
             print(f"{GREEN}Web Search toggled to: {config['web_search']}{RESET}")
 
-        elif choice == "7":
+        elif choice == "8":
             config["auto_fix"] = not config.get("auto_fix", True)
             save_config(config)
             print(f"{GREEN}Auto-Repair toggled to: {config['auto_fix']}{RESET}")
 
-        elif choice == "8":
+        elif choice == "9":
             save_config(DEFAULT_CONFIG)
             print(f"{GREEN}Configuration reset to default settings!{RESET}")
 
         time.sleep(0.5)
+
+
+def cmd_config_models(args: list, config: dict):
+    """Lists OpenRouter model IDs, optionally filtered by a substring."""
+    print_banner()
+    query = " ".join(args).strip().lower()
+
+    print(f"{CYAN}Fetching model list from OpenRouter...{RESET}")
+    models = get_openrouter_models(config.get("openrouter", {}).get("api_key", "").strip())
+
+    if not models:
+        print(f"{RED}[-] Could not fetch the model list. Check your internet connection.{RESET}\n")
+        return
+
+    if query:
+        models = [m for m in models if query in m.lower()]
+        if not models:
+            print(f"{YELLOW}[!] No models matching '{query}'.{RESET}\n")
+            return
+
+    current = config.get("openrouter", {}).get("model", "")
+    lines = []
+    for model_id in models:
+        marker = f"{GREEN}*{RESET}" if model_id == current else " "
+        lines.append(f" {marker} {model_id}")
+
+    title = f"OpenRouter Models ({len(models)})" + (f" matching '{query}'" if query else "")
+    print_box(title, "\n".join(lines), border_color=CYAN)
+    print(f"\n{DIM}Filter with: larp config models <text>   |   Select with: larp config set openrouter.model <id>{RESET}\n")
 
 
 def cmd_config(args: list):
@@ -1472,6 +1630,8 @@ def cmd_config(args: list):
 
     if subcmd in ["show", "get", "list"]:
         interactive_config_menu()
+    elif subcmd == "models":
+        cmd_config_models(args[1:], config)
     elif subcmd == "set" and len(args) >= 3:
         key_path = args[1].lower()
         val = args[2]
@@ -1479,8 +1639,8 @@ def cmd_config(args: list):
         keys = key_path.split(".")
         if len(keys) == 1:
             if keys[0] == "provider":
-                if val.lower() not in ["ollama", "gemini", "claude", "openai"]:
-                    print(f"{RED}[-] Valid providers: ollama, gemini, claude, openai{RESET}")
+                if val.lower() not in ["ollama", "gemini", "claude", "openai", "openrouter"]:
+                    print(f"{RED}[-] Valid providers: ollama, gemini, claude, openai, openrouter{RESET}")
                     return
                 config["provider"] = val.lower()
             elif keys[0] == "web_search":
@@ -1660,6 +1820,7 @@ def cmd_help():
     print(f"  {PINK}{BOLD}code{RESET} {CYAN}<task>{RESET}         {DIM}AI Code and script generator{RESET}")
     print(f"  {PINK}{BOLD}translate{RESET} {CYAN}<text>{RESET}      {DIM}Instant AI multilingual translator{RESET}")
     print(f"  {PINK}{BOLD}config{RESET}               {DIM}Interactive provider configuration TUI menu{RESET}")
+    print(f"  {PINK}{BOLD}config models{RESET} {CYAN}[text]{RESET} {DIM}Browse OpenRouter model IDs (optionally filtered){RESET}")
     print(f"  {PINK}{BOLD}clean{RESET}                {DIM}Disk cleanup — package cache, logs & orphans{RESET}")
     print(f"  {PINK}{BOLD}backup{RESET}               {DIM}Snapshot & config backup manager{RESET}")
     print(f"  {PINK}{BOLD}alias{RESET}                {DIM}Install short terminal shortcuts (l, ld, lw, lc, lg, lf) into ~/.bashrc{RESET}")
