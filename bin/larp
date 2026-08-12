@@ -74,7 +74,11 @@ DEFAULT_CONFIG = {
     "openrouter": {
         "api_key": "",
         "model": "anthropic/claude-sonnet-5"
-    }
+    },
+    # Tried in order when the active provider fails. Empty by default: falling
+    # back automatically can move a free-model workload onto a paid one, so it
+    # is opt-in. Entries: {"provider": "...", "model": "..."}; model optional.
+    "fallback_chain": []
 }
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1"
@@ -107,6 +111,22 @@ KNOWN_RECIPES = {
 }
 
 OLLAMA_STARTED_BY_LARP = False
+
+
+def plain_text(text: str) -> str:
+    """Strips ANSI colour codes — useful when a coloured message is reused inside another."""
+    return re.sub(r'\x1b\[[0-9;]*m', '', text)
+
+
+class ProviderError(Exception):
+    """A provider could not answer.
+
+    Providers raise this instead of returning an error string, so a failure is a
+    distinct control-flow signal. The previous convention — returning a coloured
+    string and testing `"Error" in response` — cannot tell a failure apart from a
+    perfectly good answer that happens to discuss an error message, which is a
+    common thing to ask a Linux assistant about.
+    """
 
 
 class Spinner:
@@ -733,11 +753,11 @@ def query_provider_ollama(prompt: str, extra_web_context: str, config: dict) -> 
                 return response_text
             else:
                 stop_ollama_and_free_vram()
-                return f"{RED}Ollama Error: HTTP status {resp.status}{RESET}"
+                raise ProviderError(f"{RED}Ollama Error: HTTP status {resp.status}{RESET}")
     except Exception as e:
         spinner.stop()
         stop_ollama_and_free_vram()
-        return f"{RED}Ollama Connection Error: {e}{RESET}"
+        raise ProviderError(f"{RED}Ollama Connection Error: {e}{RESET}")
 
 
 def query_provider_gemini(prompt: str, extra_web_context: str, config: dict) -> str:
@@ -746,7 +766,7 @@ def query_provider_gemini(prompt: str, extra_web_context: str, config: dict) -> 
     user_model = gemini_conf.get("model", "auto").strip()
 
     if not api_key:
-        return (f"{RED}[-] Error: Gemini API Key is not set!\n{RESET}"
+        raise ProviderError(f"{RED}[-] Error: Gemini API Key is not set!\n{RESET}"
                 f"{CYAN}Run {BOLD}larp config{RESET}{CYAN} to set up your API key.{RESET}")
 
     sys_context = get_system_info()
@@ -813,13 +833,13 @@ def query_provider_gemini(prompt: str, extra_web_context: str, config: dict) -> 
                 continue
             else:
                 spinner.stop()
-                return f"{RED}Gemini API Error ({e.code}): {last_error}{RESET}"
+                raise ProviderError(f"{RED}Gemini API Error ({e.code}): {last_error}{RESET}")
         except Exception as e:
             spinner.stop()
-            return f"{RED}Gemini API Request Error: {e}{RESET}"
+            raise ProviderError(f"{RED}Gemini API Request Error: {e}{RESET}")
 
     spinner.stop()
-    return f"{RED}Gemini API Error: None of the models {candidate_models[:4]} matched your API key.\nDetails: {last_error}{RESET}"
+    raise ProviderError(f"{RED}Gemini API Error: None of the models {candidate_models[:4]} matched your API key.\nDetails: {last_error}{RESET}")
 
 
 def query_provider_claude(prompt: str, extra_web_context: str, config: dict) -> str:
@@ -828,7 +848,7 @@ def query_provider_claude(prompt: str, extra_web_context: str, config: dict) -> 
     model = claude_conf.get("model", "claude-opus-5").strip()
 
     if not api_key:
-        return (f"{RED}[-] Error: Anthropic Claude API Key is not set!\n{RESET}"
+        raise ProviderError(f"{RED}[-] Error: Anthropic Claude API Key is not set!\n{RESET}"
                 f"{CYAN}Run {BOLD}larp config{RESET}{CYAN} to set up your API key.{RESET}")
 
     sys_context = get_system_info()
@@ -871,16 +891,16 @@ def query_provider_claude(prompt: str, extra_web_context: str, config: dict) -> 
                 contents = result.get("content", [])
                 if contents:
                     return contents[0].get("text", "").strip()
-                return f"{RED}Empty response from Claude API.{RESET}"
+                raise ProviderError(f"{RED}Empty response from Claude API.{RESET}")
             else:
-                return f"{RED}Claude API Error: HTTP status {resp.status}{RESET}"
+                raise ProviderError(f"{RED}Claude API Error: HTTP status {resp.status}{RESET}")
     except urllib.error.HTTPError as e:
         spinner.stop()
         err_msg = e.read().decode("utf-8", errors="ignore")
-        return f"{RED}Claude API Error ({e.code}): {err_msg}{RESET}"
+        raise ProviderError(f"{RED}Claude API Error ({e.code}): {err_msg}{RESET}")
     except Exception as e:
         spinner.stop()
-        return f"{RED}Claude API Request Error: {e}{RESET}"
+        raise ProviderError(f"{RED}Claude API Request Error: {e}{RESET}")
 
 
 def query_provider_openai(prompt: str, extra_web_context: str, config: dict) -> str:
@@ -889,7 +909,7 @@ def query_provider_openai(prompt: str, extra_web_context: str, config: dict) -> 
     model = openai_conf.get("model", "gpt-4o-mini").strip()
 
     if not api_key:
-        return (f"{RED}[-] Error: OpenAI API Key is not set!\n{RESET}"
+        raise ProviderError(f"{RED}[-] Error: OpenAI API Key is not set!\n{RESET}"
                 f"{CYAN}Run {BOLD}larp config{RESET}{CYAN} to set up your API key.{RESET}")
 
     sys_context = get_system_info()
@@ -930,16 +950,16 @@ def query_provider_openai(prompt: str, extra_web_context: str, config: dict) -> 
                 choices = result.get("choices", [])
                 if choices:
                     return choices[0].get("message", {}).get("content", "").strip()
-                return f"{RED}Empty response from OpenAI API.{RESET}"
+                raise ProviderError(f"{RED}Empty response from OpenAI API.{RESET}")
             else:
-                return f"{RED}OpenAI API Error: HTTP status {resp.status}{RESET}"
+                raise ProviderError(f"{RED}OpenAI API Error: HTTP status {resp.status}{RESET}")
     except urllib.error.HTTPError as e:
         spinner.stop()
         err_msg = e.read().decode("utf-8", errors="ignore")
-        return f"{RED}OpenAI API Error ({e.code}): {err_msg}{RESET}"
+        raise ProviderError(f"{RED}OpenAI API Error ({e.code}): {err_msg}{RESET}")
     except Exception as e:
         spinner.stop()
-        return f"{RED}OpenAI API Request Error: {e}{RESET}"
+        raise ProviderError(f"{RED}OpenAI API Request Error: {e}{RESET}")
 
 
 def get_openrouter_models(api_key: str = "") -> list:
@@ -966,7 +986,7 @@ def query_provider_openrouter(prompt: str, extra_web_context: str, config: dict)
     model = openrouter_conf.get("model", "anthropic/claude-sonnet-5").strip()
 
     if not api_key:
-        return (f"{RED}[-] Error: OpenRouter API Key is not set!\n{RESET}"
+        raise ProviderError(f"{RED}[-] Error: OpenRouter API Key is not set!\n{RESET}"
                 f"{CYAN}Run {BOLD}larp config{RESET}{CYAN} to set up your API key.{RESET}\n"
                 f"{DIM}Get one at https://openrouter.ai/keys{RESET}")
 
@@ -1013,49 +1033,122 @@ def query_provider_openrouter(prompt: str, extra_web_context: str, config: dict)
                 if "error" in result and not result.get("choices"):
                     err = result["error"]
                     msg = err.get("message", err) if isinstance(err, dict) else err
-                    return f"{RED}OpenRouter Error: {msg}{RESET}"
+                    raise ProviderError(f"{RED}OpenRouter Error: {msg}{RESET}")
                 choices = result.get("choices", [])
                 if choices:
                     return choices[0].get("message", {}).get("content", "").strip()
-                return f"{RED}Empty response from OpenRouter.{RESET}"
+                raise ProviderError(f"{RED}Empty response from OpenRouter.{RESET}")
             else:
-                return f"{RED}OpenRouter Error: HTTP status {resp.status}{RESET}"
+                raise ProviderError(f"{RED}OpenRouter Error: HTTP status {resp.status}{RESET}")
     except urllib.error.HTTPError as e:
         spinner.stop()
         err_msg = e.read().decode("utf-8", errors="ignore")
         if e.code == 401:
-            return (f"{RED}OpenRouter Error (401): invalid or expired API key.{RESET}\n"
+            raise ProviderError(f"{RED}OpenRouter Error (401): invalid or expired API key.{RESET}\n"
                     f"{CYAN}Check it with {BOLD}larp config{RESET}{CYAN} or generate a new one at https://openrouter.ai/keys{RESET}")
         if e.code == 402:
-            return (f"{RED}OpenRouter Error (402): insufficient credits for model '{model}'.{RESET}\n"
+            raise ProviderError(f"{RED}OpenRouter Error (402): insufficient credits for model '{model}'.{RESET}\n"
                     f"{CYAN}Top up at https://openrouter.ai/credits, or switch to a cheaper model:{RESET}\n"
                     f"  {BOLD}larp config set openrouter.model <model-id>{RESET}")
         if e.code == 404:
-            return (f"{RED}OpenRouter Error (404): model '{model}' does not exist.{RESET}\n"
+            raise ProviderError(f"{RED}OpenRouter Error (404): model '{model}' does not exist.{RESET}\n"
                     f"{CYAN}List available models with {BOLD}larp config models{RESET}")
-        return f"{RED}OpenRouter Error ({e.code}): {err_msg}{RESET}"
+        raise ProviderError(f"{RED}OpenRouter Error ({e.code}): {err_msg}{RESET}")
     except Exception as e:
         spinner.stop()
-        return f"{RED}OpenRouter Request Error: {e}{RESET}"
+        raise ProviderError(f"{RED}OpenRouter Request Error: {e}{RESET}")
+
+
+PROVIDER_FUNCS = {
+    "ollama": query_provider_ollama,
+    "gemini": query_provider_gemini,
+    "claude": query_provider_claude,
+    "openai": query_provider_openai,
+    "openrouter": query_provider_openrouter,
+}
+
+
+def describe_attempt(provider: str, model: str = "", config: dict = None) -> str:
+    """Labels an attempt as provider/model.
+
+    When no model override is set, the provider's configured model is resolved so
+    two entries for the same provider are distinguishable in logs and reports.
+    """
+    if not model and config:
+        model = str(config.get(provider, {}).get("model", "") or "")
+    return f"{provider}/{model}" if model else provider
+
+
+def build_attempt_chain(config: dict) -> list:
+    """Returns [(provider, model_override), ...] — the active provider, then the fallbacks.
+
+    The active provider always goes first, so the fallback chain is purely
+    additive and `provider` keeps its meaning. Duplicates are dropped so an entry
+    that repeats the active provider does not retry the same thing twice.
+    """
+    active = config.get("provider", "ollama").lower()
+    attempts = [(active, "")]
+
+    for entry in config.get("fallback_chain", []) or []:
+        if not isinstance(entry, dict):
+            continue
+        provider = str(entry.get("provider", "")).lower().strip()
+        model = str(entry.get("model", "") or "").strip()
+        if provider in PROVIDER_FUNCS and (provider, model) not in attempts:
+            attempts.append((provider, model))
+
+    return attempts
 
 
 def query_ollama(prompt: str, extra_web_context: str = "") -> str:
+    """Sends the prompt to the active provider, falling back down the chain on failure.
+
+    Named for the original Ollama-only implementation; it has been the general
+    provider dispatcher for a while.
+    """
     config = load_config()
-    provider = config.get("provider", "ollama").lower()
+    attempts = build_attempt_chain(config)
+    failures = []
 
-    if provider == "gemini":
-        res = query_provider_gemini(prompt, extra_web_context, config)
-    elif provider == "claude":
-        res = query_provider_claude(prompt, extra_web_context, config)
-    elif provider == "openai":
-        res = query_provider_openai(prompt, extra_web_context, config)
-    elif provider == "openrouter":
-        res = query_provider_openrouter(prompt, extra_web_context, config)
-    else:
-        res = query_provider_ollama(prompt, extra_web_context, config)
+    for index, (provider, model_override) in enumerate(attempts):
+        attempt_config = config
+        if model_override:
+            # Shallow-copy just the section being overridden, so the fallback
+            # model does not leak into the saved configuration.
+            attempt_config = dict(config)
+            attempt_config[provider] = dict(config.get(provider, {}))
+            attempt_config[provider]["model"] = model_override
 
-    save_history_entry(prompt, res, provider)
-    return res
+        label = describe_attempt(provider, model_override, config)
+
+        try:
+            response = PROVIDER_FUNCS[provider](prompt, extra_web_context, attempt_config)
+        except ProviderError as exc:
+            failures.append((label, str(exc)))
+            remaining = attempts[index + 1:]
+            if remaining:
+                next_label = describe_attempt(remaining[0][0], remaining[0][1], config)
+                print(f"{YELLOW}[!] {label} failed. "
+                      f"Falling back to {BOLD}{next_label}{RESET}{YELLOW}...{RESET}")
+            continue
+
+        if index > 0:
+            # Name whoever actually answered — a silent fallback can quietly move
+            # a free-model workload onto a paid one.
+            print(f"{DIM}[answered by {label}]{RESET}")
+        save_history_entry(prompt, response, label)
+        return response
+
+    report = [f"{RED}[-] Every configured provider failed:{RESET}"]
+    for label, message in failures:
+        first_line = plain_text(message).strip().splitlines()[0] if message.strip() else "unknown error"
+        report.append(f"  {PINK}{label}{RESET} — {first_line}")
+    if len(attempts) == 1:
+        report.append(f"\n{CYAN}Set up a fallback chain so larp can try another provider: "
+                      f"{BOLD}larp fallback add <provider> [model]{RESET}")
+    result = "\n".join(report)
+    save_history_entry(prompt, result, "none")
+    return result
 
 
 # =============================================================================
@@ -1420,12 +1513,14 @@ def cmd_bench():
         try:
             resp = func(test_prompt, "", config)
             elapsed = round(time.time() - start_t, 2)
-            if "Error" in resp or "HTTP" in resp:
-                results.append(f"  {PINK}{name:<24}{RESET} ── {RED}Response Error{RESET}")
-            else:
-                words_count = len(resp.split())
-                wps = round(words_count / elapsed, 1) if elapsed > 0 else 0
-                results.append(f"  {PINK}{BOLD}{name:<24}{RESET} ── {GREEN}{elapsed}s{RESET} ({wps} words/sec, {words_count} words)")
+            words_count = len(resp.split())
+            wps = round(words_count / elapsed, 1) if elapsed > 0 else 0
+            results.append(f"  {PINK}{BOLD}{name:<24}{RESET} ── {GREEN}{elapsed}s{RESET} ({wps} words/sec, {words_count} words)")
+        except ProviderError as e:
+            # Providers now raise on failure, so an answer that merely mentions
+            # the word "error" is no longer misreported as one.
+            reason = plain_text(str(e)).strip().splitlines()[0] if str(e).strip() else "unknown error"
+            results.append(f"  {PINK}{name:<24}{RESET} ── {RED}{reason[:48]}{RESET}")
         except Exception as e:
             results.append(f"  {PINK}{name:<24}{RESET} ── {RED}Failed ({e}){RESET}")
 
@@ -1589,6 +1684,95 @@ def interactive_config_menu():
             print(f"{GREEN}Configuration reset to default settings!{RESET}")
 
         time.sleep(0.5)
+
+
+def show_fallback_chain(config: dict):
+    """Prints the order providers are tried in, active provider first."""
+    attempts = build_attempt_chain(config)
+    first = describe_attempt(attempts[0][0], attempts[0][1], config)
+    lines = [f"  {GREEN}1.{RESET} {BOLD}{first}{RESET} {DIM}(active provider){RESET}"]
+    for position, (provider, model) in enumerate(attempts[1:], start=2):
+        lines.append(f"  {CYAN}{position}.{RESET} {describe_attempt(provider, model, config)}")
+
+    if len(attempts) == 1:
+        lines.append(f"\n  {DIM}No fallbacks configured — a failure is reported instead of retried.{RESET}")
+        lines.append(f"  {DIM}Add one: larp fallback add openrouter anthropic/claude-sonnet-5{RESET}")
+
+    print_box("Provider Order", "\n".join(lines), border_color=CYAN)
+    print()
+
+
+def cmd_fallback(args: list):
+    """Manages the provider fallback chain."""
+    print_banner()
+    config = load_config()
+    action = args[0].lower() if args else "show"
+
+    if action in ["show", "list", "status"]:
+        show_fallback_chain(config)
+        return
+
+    if action == "add":
+        if len(args) < 2:
+            print(f"{YELLOW}[!] Usage: larp fallback add <provider> [model]{RESET}")
+            print(f"{DIM}    Providers: {', '.join(sorted(PROVIDER_FUNCS))}{RESET}\n")
+            return
+        provider = args[1].lower()
+        if provider not in PROVIDER_FUNCS:
+            print(f"{RED}[-] Unknown provider '{provider}'. Valid: {', '.join(sorted(PROVIDER_FUNCS))}{RESET}\n")
+            return
+        model = args[2].strip() if len(args) > 2 else ""
+
+        chain = list(config.get("fallback_chain", []) or [])
+        entry = {"provider": provider}
+        if model:
+            entry["model"] = model
+        if entry in chain:
+            print(f"{YELLOW}[!] {describe_attempt(provider, model)} is already in the chain.{RESET}\n")
+            return
+        chain.append(entry)
+        config["fallback_chain"] = chain
+        save_config(config)
+        print(f"{GREEN}[+] Added {describe_attempt(provider, model)} to the fallback chain.{RESET}\n")
+        show_fallback_chain(config)
+        return
+
+    if action in ["remove", "rm", "del"]:
+        chain = list(config.get("fallback_chain", []) or [])
+        if not chain:
+            print(f"{YELLOW}[!] The fallback chain is already empty.{RESET}\n")
+            return
+        if len(args) < 2:
+            print(f"{YELLOW}[!] Usage: larp fallback remove <number>{RESET}")
+            show_fallback_chain(config)
+            return
+        try:
+            # Numbering matches `larp fallback show`, where 1 is the active
+            # provider and the chain starts at 2.
+            position = int(args[1])
+        except ValueError:
+            print(f"{RED}[-] Expected a number from the list, got '{args[1]}'.{RESET}\n")
+            return
+        index = position - 2
+        if index < 0 or index >= len(chain):
+            print(f"{RED}[-] No fallback entry number {position}. "
+                  f"Entry 1 is the active provider — change it with 'larp config set provider'.{RESET}\n")
+            return
+        removed = chain.pop(index)
+        config["fallback_chain"] = chain
+        save_config(config)
+        print(f"{GREEN}[+] Removed {describe_attempt(removed.get('provider', ''), removed.get('model', ''))}.{RESET}\n")
+        show_fallback_chain(config)
+        return
+
+    if action == "clear":
+        config["fallback_chain"] = []
+        save_config(config)
+        print(f"{GREEN}[+] Fallback chain cleared. Failures will be reported, not retried.{RESET}\n")
+        return
+
+    print(f"{YELLOW}[!] Unknown action '{action}'.{RESET}")
+    print(f"{CYAN}Usage:{RESET} larp fallback [show | add <provider> [model] | remove <number> | clear]\n")
 
 
 def cmd_config_models(args: list, config: dict):
@@ -1821,6 +2005,7 @@ def cmd_help():
     print(f"  {PINK}{BOLD}translate{RESET} {CYAN}<text>{RESET}      {DIM}Instant AI multilingual translator{RESET}")
     print(f"  {PINK}{BOLD}config{RESET}               {DIM}Interactive provider configuration TUI menu{RESET}")
     print(f"  {PINK}{BOLD}config models{RESET} {CYAN}[text]{RESET} {DIM}Browse OpenRouter model IDs (optionally filtered){RESET}")
+    print(f"  {PINK}{BOLD}fallback{RESET}             {DIM}Manage the provider fallback chain (add / remove / clear){RESET}")
     print(f"  {PINK}{BOLD}clean{RESET}                {DIM}Disk cleanup — package cache, logs & orphans{RESET}")
     print(f"  {PINK}{BOLD}backup{RESET}               {DIM}Snapshot & config backup manager{RESET}")
     print(f"  {PINK}{BOLD}alias{RESET}                {DIM}Install short terminal shortcuts (l, ld, lw, lc, lg, lf) into ~/.bashrc{RESET}")
@@ -2097,6 +2282,8 @@ def main():
         cmd_alias()
     elif subcommand == "config":
         cmd_config(args)
+    elif subcommand in ["fallback", "chain"]:
+        cmd_fallback(args)
     elif subcommand == "do":
         cmd_do(args)
     elif subcommand == "clean":
