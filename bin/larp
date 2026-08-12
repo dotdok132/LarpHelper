@@ -1471,6 +1471,35 @@ def cmd_history():
 # INTERACTIVE CONFIG MENU (TUI)
 # =============================================================================
 
+def offer_to_activate(config: dict, provider_id: str, label: str) -> None:
+    """Offers to make a freshly configured provider the active one.
+
+    Configuring a provider and selecting it are separate menu entries, so it is
+    easy to enter a key, leave the menu, and have requests still go to the
+    previously active provider.
+    """
+    if config.get("provider") == provider_id:
+        return
+    if not config.get(provider_id, {}).get("api_key", "").strip():
+        return
+
+    current = config.get("provider", "ollama").upper()
+    print(f"\n{CYAN}Active provider is currently {BOLD}{current}{RESET}{CYAN}.{RESET}")
+    try:
+        ans = input(f"{PINK}Make {label} the active provider? (Y/n): {RESET}").strip().lower()
+    except (KeyboardInterrupt, EOFError):
+        print()
+        return
+
+    if ans in ["", "y", "yes", "yeah", "д", "да"]:
+        config["provider"] = provider_id
+        save_config(config)
+        print(f"{GREEN}[+] {label} is now the active provider.{RESET}")
+    else:
+        print(f"{DIM}Keeping {current} active. Switch later with option 1, "
+              f"or: larp config set provider {provider_id}{RESET}")
+
+
 def interactive_config_menu():
     """Interactive step-by-step TUI settings menu."""
     while True:
@@ -1529,6 +1558,7 @@ def interactive_config_menu():
             if model:
                 config["gemini"]["model"] = model
             save_config(config)
+            offer_to_activate(config, "gemini", "Google Gemini")
 
         elif choice == "3":
             print(f"\n{CYAN}─── Configure Anthropic Claude API ───{RESET}")
@@ -1539,6 +1569,7 @@ def interactive_config_menu():
             if model:
                 config["claude"]["model"] = model
             save_config(config)
+            offer_to_activate(config, "claude", "Anthropic Claude")
 
         elif choice == "4":
             print(f"\n{CYAN}─── Configure OpenAI API ───{RESET}")
@@ -1549,6 +1580,7 @@ def interactive_config_menu():
             if model:
                 config["openai"]["model"] = model
             save_config(config)
+            offer_to_activate(config, "openai", "OpenAI")
 
         elif choice == "5":
             print(f"\n{CYAN}─── Configure OpenRouter ───{RESET}")
@@ -1563,6 +1595,7 @@ def interactive_config_menu():
             if model:
                 config["openrouter"]["model"] = model
             save_config(config)
+            offer_to_activate(config, "openrouter", "OpenRouter")
 
         elif choice == "6":
             print(f"\n{CYAN}─── Configure Ollama ───{RESET}")
