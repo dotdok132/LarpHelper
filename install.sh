@@ -77,7 +77,7 @@ if [ ! -f "${CONF_DIR}/config.json" ]; then
   },
   "claude": {
     "api_key": "",
-    "model": "claude-3-5-sonnet-20241022"
+    "model": "claude-opus-5"
   },
   "openai": {
     "api_key": "",
