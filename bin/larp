@@ -50,7 +50,7 @@ DEFAULT_MODEL = "mistral"
 DEFAULT_CONFIG = {
     "provider": "ollama",
     "web_search": True,
-    "auto_fix": True,
+    "auto_fix": False,
     "ollama": {
         "url": "http://localhost:11434",
         "model": "mistral",
@@ -1718,14 +1718,14 @@ def cmd_fix(args: list = None):
     print()
 
     if cmd_to_fix:
-        print(f"{CYAN}Proposed automatic repair command:{RESET}\n  {BOLD}{cmd_to_fix}{RESET}\n")
-        auto_yes = (args and any(a in ["-y", "--yes", "auto"] for a in args)) or config.get("auto_fix", True)
+        print(f"{CYAN}Proposed repair command:{RESET}\n  {BOLD}{cmd_to_fix}{RESET}\n")
+        auto_yes = (args and any(a in ["-y", "--yes"] for a in args)) or config.get("auto_fix", False)
         try:
             if not auto_yes:
-                ans = input(f"{PINK}Execute automatic repair right now? (y/N): {RESET}").strip().lower()
+                ans = input(f"{PINK}Execute proposed repair command? (y/N): {RESET}").strip().lower()
                 should_run = ans in ["y", "yes", "yeah"]
             else:
-                print(f"{GREEN}[Auto-Repair Engine] Auto-Repair enabled in configuration. Applying fixes instantly...{RESET}")
+                print(f"{GREEN}[Auto-Repair Engine] Auto-Repair enabled in config. Applying fixes...{RESET}")
                 should_run = True
 
             if should_run:

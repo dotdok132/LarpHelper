@@ -63,7 +63,7 @@ if [ ! -f "${CONF_DIR}/config.json" ]; then
 {
   "provider": "ollama",
   "web_search": true,
-  "auto_fix": true,
+  "auto_fix": false,
   "ollama": {
     "url": "http://localhost:11434",
     "model": "mistral",
