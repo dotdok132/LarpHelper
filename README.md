@@ -55,6 +55,7 @@ chmod +x install.sh
 | `larp translate <text>` | Instant AI multilingual translator (RU ↔ EN) |
 | `larp config` | Interactive step-by-step TUI settings menu |
 | `larp config models [text]` | Browse OpenRouter model IDs, optionally filtered |
+| `larp fallback` | Manage the provider fallback chain (add / remove / clear) |
 | `larp clean` | Disk cleanup wizard — pacman cache, journalctl logs & orphans |
 | `larp backup` | Snapshot & config backup manager (`~/.config/larp`, `niri`, `fwm`, `waybar`) |
 | `larp alias` | Installs short terminal shortcuts (`l`, `ld`, `lw`, `lc`, `lg`, `lf`) into `~/.bashrc` |
@@ -109,6 +110,35 @@ larp config set openrouter.model google/gemini-2.5-flash
 
 Get a key at [openrouter.ai/keys](https://openrouter.ai/keys). The default model is
 `anthropic/claude-sonnet-5`.
+
+---
+
+## 🔁 Provider Fallback
+
+When a provider fails — rate limit, expired key, service outage, anything — larp
+can retry the request on the next provider in a chain instead of giving up:
+
+```bash
+larp fallback add openrouter anthropic/claude-sonnet-5
+larp fallback add ollama
+larp fallback                 # show the order
+larp fallback remove 2
+larp fallback clear
+```
+
+The active provider is always tried first, so the chain is purely additive. Each
+entry is a provider with an optional model, which means the same provider can
+appear more than once with different models — the typical setup being a free
+model first and a paid one behind it:
+
+```
+1. openrouter/google/gemma-4-26b-a4b-it:free   (active provider)
+2. openrouter/anthropic/claude-sonnet-5
+```
+
+Fallback is **off by default**: switching automatically can move a free-model
+workload onto a paid one, so it is opt-in. When a handoff happens larp says so,
+and names the provider that actually answered.
 
 ---
 

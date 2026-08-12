@@ -346,9 +346,21 @@ class MockOpenRouterHandler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", 0))
         self.server.captured_headers = dict(self.headers)
         self.server.captured_payload = json.loads(self.rfile.read(length))
+        model = self.server.captured_payload.get("model", "")
+        if hasattr(self.server, "seen_models"):
+            self.server.seen_models.append(model)
 
         mode = self.server.mode
-        if mode == "ok":
+        if mode == "per_model":
+            # Fallback tests: succeed or rate-limit depending on the model asked for.
+            if model in getattr(self.server, "failing_models", set()):
+                self._reply(429, {"error": {"message": "rate limit exceeded"}})
+            else:
+                self._reply(200, {"choices": [{"message": {"content": f"answer from {model}"}}]})
+        elif mode == "error_shaped_answer":
+            self._reply(200, {"choices": [{"message": {"content":
+                "Error: failed to mount /dev/sda1 — the filesystem is corrupted"}}]})
+        elif mode == "ok":
             self._reply(200, {"choices": [{"message": {"content": "pong (=^.^=)"}}]})
         elif mode == "inline_error":
             # OpenRouter reports upstream provider failures as HTTP 200 with an
@@ -418,9 +430,9 @@ class TestOpenRouterProvider(unittest.TestCase):
     def test_missing_key_short_circuits_before_any_request(self):
         self.server.captured_payload = {}
         config = {"openrouter": {"api_key": "", "model": "x"}}
-        with quiet():
-            result = plain(larp.query_provider_openrouter("ping", "", config))
-        self.assertIn("OpenRouter API Key is not set", result)
+        with quiet(), self.assertRaises(larp.ProviderError) as caught:
+            larp.query_provider_openrouter("ping", "", config)
+        self.assertIn("OpenRouter API Key is not set", plain(str(caught.exception)))
         self.assertEqual(self.server.captured_payload, {}, "no request should have been made")
 
     def test_error_responses_are_actionable(self):
@@ -433,11 +445,162 @@ class TestOpenRouterProvider(unittest.TestCase):
         for mode, expected in cases:
             with self.subTest(mode=mode):
                 self.server.mode = mode
-                self.assertIn(expected, self.ask())
+                with quiet(), self.assertRaises(larp.ProviderError) as caught:
+                    larp.query_provider_openrouter("ping", "", self.config)
+                self.assertIn(expected, plain(str(caught.exception)))
 
     def test_empty_choices_is_reported(self):
         self.server.mode = "no_choices"
-        self.assertIn("Empty response", self.ask())
+        with quiet(), self.assertRaises(larp.ProviderError) as caught:
+            larp.query_provider_openrouter("ping", "", self.config)
+        self.assertIn("Empty response", plain(str(caught.exception)))
+
+
+HAS_FALLBACK = hasattr(larp, "build_attempt_chain")
+
+
+@unittest.skipUnless(HAS_FALLBACK, "fallback chain not present in bin/larp")
+class TestAttemptChain(unittest.TestCase):
+    """The active provider is tried first; the chain is purely additive."""
+
+    def test_active_provider_only_when_chain_is_empty(self):
+        config = {"provider": "openrouter", "fallback_chain": []}
+        self.assertEqual(larp.build_attempt_chain(config), [("openrouter", "")])
+
+    def test_missing_chain_key_is_treated_as_empty(self):
+        self.assertEqual(larp.build_attempt_chain({"provider": "ollama"}), [("ollama", "")])
+
+    def test_active_provider_comes_first(self):
+        config = {
+            "provider": "openrouter",
+            "fallback_chain": [{"provider": "gemini"}, {"provider": "ollama"}],
+        }
+        self.assertEqual(
+            larp.build_attempt_chain(config),
+            [("openrouter", ""), ("gemini", ""), ("ollama", "")],
+        )
+
+    def test_model_overrides_are_kept(self):
+        config = {
+            "provider": "openrouter",
+            "fallback_chain": [{"provider": "openrouter", "model": "anthropic/claude-sonnet-5"}],
+        }
+        self.assertEqual(
+            larp.build_attempt_chain(config),
+            [("openrouter", ""), ("openrouter", "anthropic/claude-sonnet-5")],
+        )
+
+    def test_duplicate_entries_are_dropped(self):
+        config = {
+            "provider": "gemini",
+            "fallback_chain": [{"provider": "gemini"}, {"provider": "gemini"}],
+        }
+        self.assertEqual(larp.build_attempt_chain(config), [("gemini", "")])
+
+    def test_unknown_and_malformed_entries_are_ignored(self):
+        config = {
+            "provider": "ollama",
+            "fallback_chain": [{"provider": "chatgpt"}, "not-a-dict", {}, {"model": "x"}],
+        }
+        self.assertEqual(larp.build_attempt_chain(config), [("ollama", "")])
+
+    def test_label_resolves_the_configured_model(self):
+        # Without this, two openrouter entries are indistinguishable in reports.
+        config = {"openrouter": {"model": "google/gemma-4-26b-a4b-it:free"}}
+        self.assertEqual(
+            larp.describe_attempt("openrouter", "", config),
+            "openrouter/google/gemma-4-26b-a4b-it:free",
+        )
+        self.assertEqual(
+            larp.describe_attempt("openrouter", "anthropic/claude-sonnet-5", config),
+            "openrouter/anthropic/claude-sonnet-5",
+        )
+
+
+@unittest.skipUnless(
+    HAS_FALLBACK and HAS_OPENROUTER, "fallback chain or OpenRouter not present in bin/larp"
+)
+class TestFallbackBehaviour(unittest.TestCase):
+    """End-to-end: a failing provider hands off to the next one."""
+
+    FREE = "google/gemma-4-26b-a4b-it:free"
+    PAID = "anthropic/claude-sonnet-5"
+
+    @classmethod
+    def setUpClass(cls):
+        cls.server = HTTPServer(("127.0.0.1", 0), MockOpenRouterHandler)
+        cls.server.mode = "ok"
+        cls.server.failing_models = set()
+        cls.server.seen_models = []
+        cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
+        cls.thread.start()
+        cls._original_url = larp.OPENROUTER_URL
+        cls._original_loader = larp.load_config
+        cls._original_history = larp.save_history_entry
+        larp.OPENROUTER_URL = f"http://127.0.0.1:{cls.server.server_address[1]}"
+        larp.save_history_entry = lambda *args, **kwargs: None
+
+    @classmethod
+    def tearDownClass(cls):
+        larp.OPENROUTER_URL = cls._original_url
+        larp.load_config = cls._original_loader
+        larp.save_history_entry = cls._original_history
+        cls.server.shutdown()
+        cls.server.server_close()
+        cls.thread.join(timeout=5)
+
+    def setUp(self):
+        self.server.mode = "per_model"
+        self.server.failing_models = set()
+        self.server.seen_models = []
+        config = {
+            "provider": "openrouter",
+            "openrouter": {"api_key": "sk-test", "model": self.FREE},
+            "fallback_chain": [{"provider": "openrouter", "model": self.PAID}],
+        }
+        larp.load_config = lambda: json.loads(json.dumps(config))
+
+    def ask(self):
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            answer = larp.query_ollama("вопрос")
+        return plain(answer), plain(buffer.getvalue())
+
+    def test_no_fallback_when_the_first_provider_answers(self):
+        answer, output = self.ask()
+        self.assertEqual(answer, f"answer from {self.FREE}")
+        self.assertEqual(self.server.seen_models, [self.FREE])
+        self.assertNotIn("Falling back", output)
+
+    def test_rate_limited_model_hands_off_to_the_next(self):
+        self.server.failing_models = {self.FREE}
+        answer, output = self.ask()
+        self.assertEqual(answer, f"answer from {self.PAID}")
+        self.assertEqual(self.server.seen_models, [self.FREE, self.PAID])
+
+    def test_the_handoff_is_announced(self):
+        # A silent fallback can move a free-model workload onto a paid one.
+        self.server.failing_models = {self.FREE}
+        _, output = self.ask()
+        self.assertIn("Falling back", output)
+        self.assertIn(f"answered by openrouter/{self.PAID}", output)
+
+    def test_total_failure_lists_every_attempt(self):
+        self.server.failing_models = {self.FREE, self.PAID}
+        answer, _ = self.ask()
+        self.assertIn("Every configured provider failed", answer)
+        self.assertIn(self.FREE, answer)
+        self.assertIn(self.PAID, answer)
+
+    def test_an_answer_mentioning_an_error_is_not_a_failure(self):
+        # The regression that motivated ProviderError: detecting failure by
+        # searching the response for "Error" misreads a correct answer about an
+        # error message, which is a common thing to ask a Linux assistant.
+        self.server.mode = "error_shaped_answer"
+        answer, output = self.ask()
+        self.assertTrue(answer.startswith("Error: failed to mount"))
+        self.assertEqual(self.server.seen_models, [self.FREE])
+        self.assertNotIn("Falling back", output)
 
 
 @unittest.skipUnless(HAS_OPENROUTER, "OpenRouter provider not present in bin/larp")

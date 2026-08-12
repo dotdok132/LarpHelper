@@ -86,7 +86,8 @@ if [ ! -f "${CONF_DIR}/config.json" ]; then
   "openrouter": {
     "api_key": "",
     "model": "anthropic/claude-sonnet-5"
-  }
+  },
+  "fallback_chain": []
 }
 EOF
 fi
