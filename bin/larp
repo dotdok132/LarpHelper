@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """
 ===============================================================================
- LarpLinux Supreme AI OS Companion — larp CLI
- Universal Multi-Distro Linux Release v4.0
+ Larp OS Companion — larp CLI
+ Universal Multi-Distro & Multi-Init Linux Release v4.0
  License: MIT
  Dependencies: Python 3.8+ (Standard Library Only)
+ Compatible with: systemd, OpenRC, runit, dinit, s6, sysvinit
 ===============================================================================
 """
 
@@ -168,11 +169,30 @@ def detect_package_manager() -> tuple:
         return ("apk", "sudo apk add", "sudo apk update && sudo apk upgrade", "sudo apk cache clean")
     elif shutil.which("xbps-install"):
         return ("xbps", "sudo xbps-install -Sy", "sudo xbps-install -Su", "sudo xbps-remove -O")
+    elif shutil.which("eopkg"):
+        return ("eopkg", "sudo eopkg it -y", "sudo eopkg ur && sudo eopkg up -y", "sudo eopkg rmo")
+    elif shutil.which("emerge"):
+        return ("emerge", "sudo emerge -av", "sudo emerge --sync && sudo emerge -uDN @world", "sudo emerge --depclean")
     return ("package-manager", "sudo install", "sudo update", "sudo clean")
 
 
+def detect_init_system() -> tuple:
+    """Detects active init system (systemd, OpenRC, runit, dinit, s6, sysvinit)."""
+    if shutil.which("systemctl") and os.path.exists("/run/systemd/system"):
+        return ("systemd", "sudo systemctl start", "sudo systemctl restart", "sudo systemctl stop")
+    elif shutil.which("rc-service"):
+        return ("OpenRC", "sudo rc-service start", "sudo rc-service restart", "sudo rc-service stop")
+    elif shutil.which("sv"):
+        return ("runit", "sudo sv start", "sudo sv restart", "sudo sv stop")
+    elif shutil.which("dinitctl"):
+        return ("dinit", "sudo dinitctl start", "sudo dinitctl restart", "sudo dinitctl stop")
+    elif shutil.which("service"):
+        return ("sysvinit", "sudo service start", "sudo service restart", "sudo service stop")
+    return ("init-system", "sudo service start", "sudo service restart", "sudo service stop")
+
+
 def build_system_prompt() -> str:
-    """Cute 'nyashka' Linux AI persona tailored dynamically to any Linux distribution."""
+    """Cute 'nyashka' Linux AI persona tailored dynamically to any Linux distribution and init system."""
     os_name = "Linux"
     if os.path.exists("/etc/os-release"):
         try:
@@ -185,15 +205,16 @@ def build_system_prompt() -> str:
             pass
 
     pkg_name, install_cmd, _, _ = detect_package_manager()
+    init_name, service_cmd, _, _ = detect_init_system()
 
     return (
         f"You are Larp AI, a super cute, warm, friendly, and enthusiastic AI companion for {os_name}!" "\n\n"
         r"PERSONALITY & BEHAVIOR:" "\n"
         r"1. Be adorable, friendly, warm, and helpful (a true cute companion / няшка)! Never be a boring, stiff, or robotic 'dushnila'." "\n"
         r"2. TERMINAL FONT & KAOMOJI RULE: NEVER use graphic emojis OR rare CJK Unicode symbols that result in broken boxes or missing characters in terminal fonts! ONLY use safe 100% standard ASCII kaomoji that render cleanly in any Linux console (such as (^_^), (^--^), (o_O), (x_x), (=^.^=), \(^o^)/, (>-<), (¬_¬), (-_-;))." "\n"
-        f"3. SYSTEM CONTEXT: Running on {os_name}. Active package manager: {pkg_name} (install command: '{install_cmd}')." "\n"
+        f"3. SYSTEM CONTEXT: OS: {os_name} | Package Manager: {pkg_name} | Init System: {init_name} (service command: '{service_cmd}')." "\n"
         r"4. Do NOT mention any desktop environments, window managers, or personal user details unless the user explicitly asks about them." "\n"
-        f"5. Provide accurate, safe, and verified Linux commands tailored specifically for {os_name} and {pkg_name}." "\n"
+        f"5. Provide accurate, safe, and verified Linux commands tailored specifically for {os_name}, {pkg_name}, and {init_name}." "\n"
         r"6. NEVER suggest Windows-specific tools or concepts (no sfc, chkdsk, bsod)." "\n"
         r"7. ALWAYS respond in the EXACT SAME LANGUAGE as the user's message (e.g., reply in Russian if asked in Russian)."
     )
@@ -429,7 +450,9 @@ def get_system_info() -> str:
     info_lines.append(f"Shell: {shell}")
 
     pkg_name, _, _, _ = detect_package_manager()
+    init_name, _, _, _ = detect_init_system()
     info_lines.append(f"Package Manager: {pkg_name}")
+    info_lines.append(f"Init System: {init_name}")
 
     try:
         cpu_cmd = "grep -m1 'model name' /proc/cpuinfo | cut -d: -f2"
@@ -482,8 +505,14 @@ def ensure_ollama_and_get_model(config: dict) -> str:
         print(f"{PINK}Ollama is not running. Starting Ollama daemon...{RESET}")
         OLLAMA_STARTED_BY_LARP = True
         
-        res = subprocess.run(["systemctl", "start", "ollama"], capture_output=True, text=True)
-        if res.returncode != 0:
+        init_name, _, _, _ = detect_init_system()
+        if init_name == "systemd":
+            subprocess.run(["systemctl", "start", "ollama"], capture_output=True, text=True, check=False)
+        elif init_name == "OpenRC":
+            subprocess.run(["rc-service", "ollama", "start"], capture_output=True, text=True, check=False)
+        elif init_name == "runit":
+            subprocess.run(["sv", "start", "ollama"], capture_output=True, text=True, check=False)
+        else:
             try:
                 subprocess.Popen(["ollama", "serve"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             except Exception as e:
@@ -525,8 +554,14 @@ def ensure_ollama_and_get_model(config: dict) -> str:
 def stop_ollama_and_free_vram():
     global OLLAMA_STARTED_BY_LARP
     if OLLAMA_STARTED_BY_LARP:
+        init_name, _, _, _ = detect_init_system()
         try:
-            subprocess.run(["systemctl", "stop", "ollama"], capture_output=True, text=True, check=False)
+            if init_name == "systemd":
+                subprocess.run(["systemctl", "stop", "ollama"], capture_output=True, text=True, check=False)
+            elif init_name == "OpenRC":
+                subprocess.run(["rc-service", "ollama", "stop"], capture_output=True, text=True, check=False)
+            elif init_name == "runit":
+                subprocess.run(["sv", "stop", "ollama"], capture_output=True, text=True, check=False)
         except Exception:
             pass
         OLLAMA_STARTED_BY_LARP = False
@@ -843,7 +878,7 @@ def query_ollama(prompt: str, extra_web_context: str = "") -> str:
 # =============================================================================
 
 def cmd_fetch():
-    """Aesthetic pastel system informer for LarpLinux and any Linux distribution."""
+    """Aesthetic pastel system informer for Larp Linux and any Linux distribution."""
     user = os.environ.get("USER", "user")
     host = os.environ.get("HOSTNAME", "linux")
     
@@ -858,11 +893,12 @@ def cmd_fetch():
         except Exception:
             pass
 
-    kernel = subprocess.check_output(["uname", "-sr"], text=True).strip() if shutil.which("uname") else "Linux 7.1.5-zen"
+    kernel = subprocess.check_output(["uname", "-sr"], text=True).strip() if shutil.which("uname") else "Linux"
     shell = os.environ.get("SHELL", "/bin/bash").split("/")[-1]
     wm = os.environ.get("XDG_CURRENT_DESKTOP", "Wayland")
     
     pkg_name, _, _, _ = detect_package_manager()
+    init_name, _, _, _ = detect_init_system()
     pkgs_count = "0"
     try:
         if pkg_name == "pacman":
@@ -900,7 +936,7 @@ def cmd_fetch():
         f"{GRAY}─────────────────────────────{RESET}",
         f"{CYAN}OS:{RESET}          {WHITE}{os_name}{RESET}",
         f"{CYAN}Kernel:{RESET}      {WHITE}{kernel}{RESET}",
-        f"{CYAN}Uptime:{RESET}      {WHITE}{uptime_str}{RESET}",
+        f"{CYAN}Init System:{RESET} {WHITE}{init_name}{RESET}",
         f"{CYAN}Packages:{RESET}    {WHITE}{pkgs_count} ({pkg_name}){RESET}",
         f"{CYAN}Shell:{RESET}       {WHITE}{shell}{RESET}",
         f"{CYAN}Compositor:{RESET}  {PINK}{wm}{RESET}",
@@ -1082,7 +1118,7 @@ def cmd_do(args: list):
 # =============================================================================
 
 def cmd_clean():
-    """Disk cleanup and system optimization wizard across Linux distros."""
+    """Disk cleanup and system optimization wizard across systemd and non-systemd Linux distros."""
     print_banner()
     print(f"{BOLD}{PINK}Larp System Cleanup & Optimization Wizard:{RESET}\n")
 
@@ -1096,11 +1132,19 @@ def cmd_clean():
             subprocess.run(clean_cmd, shell=True)
             cleaned_items.append(f"{pkg_name} package cache")
 
-    print(f"\n  {CYAN}Cleaning old systemd logs (older than 7 days)...{RESET}")
-    ans = input(f"  {PINK}Vacuum journalctl logs? (y/N): {RESET}").strip().lower()
-    if ans in ["y", "yes", "yeah"]:
-        subprocess.run("sudo journalctl --vacuum-time=7d", shell=True)
-        cleaned_items.append("Journalctl logs")
+    init_name, _, _, _ = detect_init_system()
+    if init_name == "systemd":
+        print(f"\n  {CYAN}Cleaning old systemd logs (older than 7 days)...{RESET}")
+        ans = input(f"  {PINK}Vacuum journalctl logs? (y/N): {RESET}").strip().lower()
+        if ans in ["y", "yes", "yeah"]:
+            subprocess.run("sudo journalctl --vacuum-time=7d", shell=True)
+            cleaned_items.append("Journalctl logs")
+    else:
+        print(f"\n  {CYAN}Cleaning old rotated log archives in /var/log...{RESET}")
+        ans = input(f"  {PINK}Clean rotated log archives? (y/N): {RESET}").strip().lower()
+        if ans in ["y", "yes", "yeah"]:
+            subprocess.run("sudo rm -f /var/log/*.gz /var/log/*.[0-9] 2>/dev/null || true", shell=True)
+            cleaned_items.append("Rotated /var/log archives")
 
     user_cache = os.path.expanduser("~/.cache")
     if os.path.exists(user_cache):
@@ -1448,7 +1492,7 @@ def cmd_chat():
             print(f"\n{CYAN}[Larp Auto-Repair Engine]{RESET} {PINK}Scanning system logs & applying fixes...{RESET}\n")
             cmd_fix(["auto"])
             history.append(f"User: {user_input}")
-            history.append(f"Larp AI: [Executed journalctl diagnostics and automatically repaired system issues]")
+            history.append(f"Larp AI: [Executed system log diagnostics and automatically repaired system issues]")
             continue
 
         history.append(f"User: {user_input}")
@@ -1457,10 +1501,15 @@ def cmd_chat():
 
         if any(kw in user_input.lower() for kw in ["error", "issue", "problem", "journalctl", "log", "ошибк", "проблем", "лог"]):
             try:
-                res = subprocess.run(["journalctl", "-p", "3", "-n", "15", "--no-pager"], capture_output=True, text=True, check=False)
-                logs_ctx = res.stdout.strip()
+                if shutil.which("journalctl"):
+                    res = subprocess.run(["journalctl", "-p", "3", "-n", "15", "--no-pager"], capture_output=True, text=True, check=False)
+                    logs_ctx = res.stdout.strip()
+                else:
+                    res = subprocess.run("dmesg -T -l err,crit,alert,emerg 2>/dev/null | tail -n 15", shell=True, capture_output=True, text=True, check=False)
+                    logs_ctx = res.stdout.strip()
+
                 if logs_ctx:
-                    web_ctx += f"\n\n[LIVE JOURNALCTL CRITICAL SYSTEM LOGS]:\n{logs_ctx}"
+                    web_ctx += f"\n\n[LIVE CRITICAL SYSTEM LOGS]:\n{logs_ctx}"
             except Exception:
                 pass
 
@@ -1486,7 +1535,7 @@ def cmd_help():
     print(f"  {PINK}{BOLD}code{RESET} {CYAN}<task>{RESET}         {DIM}AI Code and script generator{RESET}")
     print(f"  {PINK}{BOLD}translate{RESET} {CYAN}<text>{RESET}      {DIM}Instant AI multilingual translator{RESET}")
     print(f"  {PINK}{BOLD}config{RESET}               {DIM}Interactive provider configuration TUI menu{RESET}")
-    print(f"  {PINK}{BOLD}clean{RESET}                {DIM}Disk cleanup — package cache, journalctl logs & orphans{RESET}")
+    print(f"  {PINK}{BOLD}clean{RESET}                {DIM}Disk cleanup — package cache, logs & orphans{RESET}")
     print(f"  {PINK}{BOLD}backup{RESET}               {DIM}Snapshot & config backup manager{RESET}")
     print(f"  {PINK}{BOLD}alias{RESET}                {DIM}Install short terminal shortcuts (l, ld, lw, lc, lg, lf) into ~/.bashrc{RESET}")
     print(f"  {PINK}{BOLD}bench{RESET}                {DIM}Speedtest & latency benchmark for all AI providers{RESET}")
@@ -1614,22 +1663,30 @@ def cmd_why(args: list):
 
 def cmd_fix(args: list = None):
     print_banner()
-    print(f"{CYAN}Reading recent critical system logs (journalctl -p 3 -n 20)...{RESET}\n")
+    print(f"{CYAN}Reading recent critical system logs...{RESET}\n")
 
+    logs = ""
     try:
-        cmd = ["journalctl", "-p", "3", "-n", "20", "--no-pager"]
-        res = subprocess.run(cmd, capture_output=True, text=True, check=False)
-        logs = res.stdout.strip()
+        if shutil.which("journalctl"):
+            cmd = ["journalctl", "-p", "3", "-n", "20", "--no-pager"]
+            res = subprocess.run(cmd, capture_output=True, text=True, check=False)
+            logs = res.stdout.strip()
+        else:
+            res = subprocess.run("dmesg -T -l err,crit,alert,emerg 2>/dev/null | tail -n 20", shell=True, capture_output=True, text=True, check=False)
+            logs = res.stdout.strip()
+            if not logs and os.path.exists("/var/log/messages"):
+                with open("/var/log/messages", "r", errors="ignore") as f:
+                    logs = "".join(f.readlines()[-20:]).strip()
     except Exception as e:
-        print(f"{RED}[-] Error executing journalctl: {e}{RESET}")
+        print(f"{RED}[-] Error reading logs: {e}{RESET}")
         sys.exit(1)
 
     if not logs:
-        print(f"{GREEN}[+] No critical system errors (priority <= 3) found in journalctl! System is stable.{RESET}\n")
+        print(f"{GREEN}[+] No critical system errors found in system logs! System is stable.{RESET}\n")
         return
 
     prompt = (
-        f"Here are the 20 most recent critical system logs (journalctl -p 3 -n 20):\n\n"
+        f"Here are the 20 most recent critical system logs:\n\n"
         f"```\n{logs}\n```\n\n"
         f"1. Explain the root cause in 2-3 brief sentences.\n"
         f"2. Provide an exact one-liner bash resolution command formatted as: FIX_CMD: <fix_command>"
@@ -1647,9 +1704,9 @@ def cmd_fix(args: list = None):
             extracted = line.split("FIX_CMD:")[1].strip()
             cmd_to_fix = sanitize_shell_command(extracted)
             continue
-        elif any(token in line for token in ["sudo systemctl", "sudo pacman", "sudo apt", "sudo dnf", "systemctl restart", "sudo rm", "sudo chmod", "sudo sed"]):
+        elif any(token in line for token in ["sudo systemctl", "sudo rc-service", "sudo sv", "sudo pacman", "sudo apt", "sudo dnf", "systemctl restart", "sudo rm", "sudo chmod", "sudo sed"]):
             clean_line = sanitize_shell_command(line)
-            extracted = re.sub(r'^.*?(sudo systemctl|systemctl|sudo pacman|sudo apt|sudo dnf|sudo rm|sudo chmod|sudo sed)', r'\1', clean_line)
+            extracted = re.sub(r'^.*?(sudo systemctl|sudo rc-service|sudo sv|systemctl|sudo pacman|sudo apt|sudo dnf|sudo rm|sudo chmod|sudo sed)', r'\1', clean_line)
             if not cmd_to_fix:
                 cmd_to_fix = sanitize_shell_command(extracted)
         clean_lines.append(line)
