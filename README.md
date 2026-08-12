@@ -18,7 +18,7 @@
 ## ✨ Key Features
 
 - **🌸 Zero Dependencies**: Built strictly using standard Python 3.8+ libraries (`urllib`, `json`, `subprocess`, `sys`). No `pip install` required!
-- **🤖 Universal AI Engine**: Native support for **Ollama** (local VRAM-saver engine with `keep_alive: 0`), **Google Gemini API** (with dynamic model auto-discovery), **Anthropic Claude API**, and **OpenAI ChatGPT API**.
+- **🤖 Universal AI Engine**: Native support for **Ollama** (local VRAM-saver engine with `keep_alive: 0`), **OpenRouter** (one API key for ~400 models — Claude, Gemini, GPT, Llama and more), **Google Gemini API** (with dynamic model auto-discovery), **Anthropic Claude API**, and **OpenAI ChatGPT API**.
 - **⚡ 19 Integrated OS Modules**: Includes terminal copilot (`larp do`), log auto-repair engine (`larp fix`), system informer (`larp fetch`), benchmark (`larp bench`), translator (`larp translate`), cleanup wizard (`larp clean`), and package architect (`larp get-create`).
 - **🌸 Truecolor Glassmorphic UI**: Truecolor pastel-pink (`#F5A9B8`) and cyan (`#5BCEFA`) console palette with clean borders and emoji-free aesthetics.
 - **🛡️ Terminal Kaomoji Persona**: Cute, enthusiastic AI companion persona (`(^--^)`, `(=^.^=)`, `\(^o^)/`) configured with safe console ASCII kaomoji that render cleanly in any Linux terminal without broken font boxes.
@@ -54,6 +54,7 @@ chmod +x install.sh
 | `larp code <task>` | AI Code and script generator with syntax block formatting |
 | `larp translate <text>` | Instant AI multilingual translator (RU ↔ EN) |
 | `larp config` | Interactive step-by-step TUI settings menu |
+| `larp config models [text]` | Browse OpenRouter model IDs, optionally filtered |
 | `larp clean` | Disk cleanup wizard — pacman cache, journalctl logs & orphans |
 | `larp backup` | Snapshot & config backup manager (`~/.config/larp`, `niri`, `fwm`, `waybar`) |
 | `larp alias` | Installs short terminal shortcuts (`l`, `ld`, `lw`, `lc`, `lg`, `lf`) into `~/.bashrc` |
@@ -86,6 +87,28 @@ larp config set provider gemini
 larp config set gemini.api_key "YOUR_GEMINI_API_KEY"
 larp config set auto_fix true
 ```
+
+### Using OpenRouter
+
+OpenRouter gives you Claude, Gemini, GPT, Llama and ~400 other models through a
+single API key, so you don't need to register with each provider separately:
+
+```bash
+larp config set provider openrouter
+larp config set openrouter.api_key "YOUR_OPENROUTER_KEY"
+```
+
+Model IDs are namespaced (`anthropic/claude-sonnet-5`, `google/gemini-2.5-flash`,
+`meta-llama/llama-3.3-70b-instruct`). Browse and filter the list, then pick one:
+
+```bash
+larp config models              # every available model
+larp config models gemini       # only models matching "gemini"
+larp config set openrouter.model google/gemini-2.5-flash
+```
+
+Get a key at [openrouter.ai/keys](https://openrouter.ai/keys). The default model is
+`anthropic/claude-sonnet-5`.
 
 ---
 

@@ -82,6 +82,10 @@ if [ ! -f "${CONF_DIR}/config.json" ]; then
   "openai": {
     "api_key": "",
     "model": "gpt-4o-mini"
+  },
+  "openrouter": {
+    "api_key": "",
+    "model": "anthropic/claude-sonnet-5"
   }
 }
 EOF
