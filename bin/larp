@@ -2,7 +2,7 @@
 """
 ===============================================================================
  LarpLinux Supreme AI OS Companion — larp CLI
- GitHub Repository Edition v4.0
+ Universal Multi-Distro Linux Release v4.0
  License: MIT
  Dependencies: Python 3.8+ (Standard Library Only)
 ===============================================================================
@@ -77,28 +77,24 @@ KNOWN_RECIPES = {
         "cmd": "curl -sL https://fwm-website.vercel.app/install-fwm.sh | bash"
     },
     "dev-pack": {
-        "desc": "Full development suite (base-devel, git, python, nodejs, rust, neovim, vscode)",
-        "cmd": "sudo pacman -S --needed base-devel git python python-pip nodejs npm rust neovim code"
+        "desc": "Full development suite (base-devel/build-essential, git, python, nodejs, rust, neovim)",
+        "cmd": "sudo pacman -S --needed base-devel git python python-pip nodejs npm rust neovim 2>/dev/null || sudo apt install -y build-essential git python3 python3-pip nodejs npm rustc neovim 2>/dev/null || sudo dnf groupinstall -y 'Development Tools' 2>/dev/null"
     },
     "niri-dots": {
         "desc": "Aesthetic pastel-pink dotfiles for Niri (waybar, rofi-wayland, swaync, kitty)",
-        "cmd": "sudo pacman -S --needed waybar rofi-wayland swaync kitty hyprpaper swaylock"
+        "cmd": "sudo pacman -S --needed waybar rofi-wayland swaync kitty hyprpaper swaylock 2>/dev/null || sudo apt install -y waybar rofi sway-notification-center kitty 2>/dev/null"
     },
     "fonts-pack": {
-        "desc": "LarpLinux font collection (JetBrains Nerd Fonts, Inter, Roboto, Emoji)",
-        "cmd": "sudo pacman -S --needed ttf-jetbrains-mono-nerd ttf-inter ttf-roboto noto-fonts-emoji ttf-font-awesome"
+        "desc": "Larp font collection (Nerd Fonts, Inter, Roboto, Emoji)",
+        "cmd": "sudo pacman -S --needed ttf-jetbrains-mono-nerd ttf-inter ttf-roboto noto-fonts-emoji 2>/dev/null || sudo apt install -y fonts-jetbrains-mono fonts-inter fonts-roboto fonts-noto-color-emoji 2>/dev/null"
     },
     "media-pack": {
         "desc": "Multimedia and graphics package (mpv, ffmpeg, obs-studio, gimp, vlc, pipewire)",
-        "cmd": "sudo pacman -S --needed mpv ffmpeg obs-studio gimp vlc pipewire-pulse"
+        "cmd": "sudo pacman -S --needed mpv ffmpeg obs-studio gimp vlc pipewire-pulse 2>/dev/null || sudo apt install -y mpv ffmpeg obs-studio gimp vlc pipewire-audio-client-libraries 2>/dev/null"
     },
     "gaming-pack": {
-        "desc": "LarpLinux Gaming Suite (Steam, Lutris, MangoHud, GameMode, Wine-Staging)",
-        "cmd": "sudo pacman -S --needed steam lutris mangohud gamemode wine-staging"
-    },
-    "pink-theme": {
-        "desc": "Pastel Pink GTK theme, icons, and cursor theme package for LarpLinux",
-        "cmd": "sudo pacman -S --needed catppuccin-gtk-theme-mocha papirus-icon-theme bibata-cursor-theme"
+        "desc": "Linux Gaming Suite (Steam, Lutris, MangoHud, GameMode, Wine)",
+        "cmd": "sudo pacman -S --needed steam lutris mangohud gamemode wine-staging 2>/dev/null || sudo apt install -y steam lutris mangohud gamemode wine 2>/dev/null"
     }
 }
 
@@ -140,7 +136,7 @@ def print_banner():
     banner = f"""
 {PINK}{BOLD}  ╭───╮   {DEEP_PINK} █░░ █▀█ █▀█ █▀█ █░░ ░▀█ █▄░█ █░█ █░█{RESET}
 {PINK}{BOLD}  │   │   {DEEP_PINK} █▄▄ █▀█ █▀▄ █▀▀ █▄▄ █▄█ █░▀█ █▄█ ▄▀▄{RESET}
-{PINK}{BOLD}  ╰───╯   {CYAN}─── LarpLinux OS Supreme AI Companion ───{RESET}
+{PINK}{BOLD}  ╰───╯   {CYAN}─── Universal AI OS Companion v4.0 ───{RESET}
 """
     print(banner)
 
@@ -158,17 +154,48 @@ def print_box(title: str, text: str, border_color: str = PINK):
     print(bottom)
 
 
+def detect_package_manager() -> tuple:
+    """Dynamically detects active package manager across any Linux distribution."""
+    if shutil.which("pacman"):
+        return ("pacman", "sudo pacman -S --needed", "sudo pacman -Syu", "sudo pacman -Sc --noconfirm")
+    elif shutil.which("apt"):
+        return ("apt", "sudo apt install -y", "sudo apt update && sudo apt upgrade -y", "sudo apt autoremove -y && sudo apt clean")
+    elif shutil.which("dnf"):
+        return ("dnf", "sudo dnf install -y", "sudo dnf upgrade -y", "sudo dnf autoremove -y && sudo dnf clean all")
+    elif shutil.which("zypper"):
+        return ("zypper", "sudo zypper install -y", "sudo zypper update -y", "sudo zypper clean --all")
+    elif shutil.which("apk"):
+        return ("apk", "sudo apk add", "sudo apk update && sudo apk upgrade", "sudo apk cache clean")
+    elif shutil.which("xbps-install"):
+        return ("xbps", "sudo xbps-install -Sy", "sudo xbps-install -Su", "sudo xbps-remove -O")
+    return ("package-manager", "sudo install", "sudo update", "sudo clean")
+
+
 def build_system_prompt() -> str:
-    """Cute 'nyashka' Linux AI persona using ONLY safe ASCII kaomoji that render cleanly in terminal fonts."""
+    """Cute 'nyashka' Linux AI persona tailored dynamically to any Linux distribution."""
+    os_name = "Linux"
+    if os.path.exists("/etc/os-release"):
+        try:
+            with open("/etc/os-release", "r") as f:
+                for line in f:
+                    if line.startswith("PRETTY_NAME="):
+                        os_name = line.split("=")[1].strip().strip('"')
+                        break
+        except Exception:
+            pass
+
+    pkg_name, install_cmd, _, _ = detect_package_manager()
+
     return (
-        r"You are Larp AI, a super cute, warm, friendly, and enthusiastic AI companion for Linux!" "\n\n"
+        f"You are Larp AI, a super cute, warm, friendly, and enthusiastic AI companion for {os_name}!" "\n\n"
         r"PERSONALITY & BEHAVIOR:" "\n"
         r"1. Be adorable, friendly, warm, and helpful (a true cute companion / няшка)! Never be a boring, stiff, or robotic 'dushnila'." "\n"
         r"2. TERMINAL FONT & KAOMOJI RULE: NEVER use graphic emojis OR rare CJK Unicode symbols that result in broken boxes or missing characters in terminal fonts! ONLY use safe 100% standard ASCII kaomoji that render cleanly in any Linux console (such as (^_^), (^--^), (o_O), (x_x), (=^.^=), \(^o^)/, (>-<), (¬_¬), (-_-;))." "\n"
-        r"3. Do NOT mention any desktop environments, window managers, or personal user details unless the user explicitly asks about them." "\n"
-        r"4. Provide accurate, safe, and verified Linux commands for Arch Linux / pacman / AUR / systemd." "\n"
-        r"5. NEVER suggest Windows-specific tools or concepts (no sfc, chkdsk, bsod)." "\n"
-        r"6. ALWAYS respond in the EXACT SAME LANGUAGE as the user's message (e.g., reply in Russian if asked in Russian)."
+        f"3. SYSTEM CONTEXT: Running on {os_name}. Active package manager: {pkg_name} (install command: '{install_cmd}')." "\n"
+        r"4. Do NOT mention any desktop environments, window managers, or personal user details unless the user explicitly asks about them." "\n"
+        f"5. Provide accurate, safe, and verified Linux commands tailored specifically for {os_name} and {pkg_name}." "\n"
+        r"6. NEVER suggest Windows-specific tools or concepts (no sfc, chkdsk, bsod)." "\n"
+        r"7. ALWAYS respond in the EXACT SAME LANGUAGE as the user's message (e.g., reply in Russian if asked in Russian)."
     )
 
 
@@ -360,11 +387,13 @@ def get_full_web_context(query: str) -> str:
     if snippets:
         context_blocks.append("Web Search Results (DuckDuckGo):\n" + "\n".join(f"• {s}" for s in snippets))
 
-    arch_pkgs = search_arch_packages_api(query)
-    aur_pkgs = search_aur_packages_api(query)
-    combined_pkgs = arch_pkgs + aur_pkgs
-    if combined_pkgs:
-        context_blocks.append("Found Arch/AUR Packages:\n" + "\n".join(f" - {p}" for p in combined_pkgs[:7]))
+    pkg_manager, _, _, _ = detect_package_manager()
+    if pkg_manager == "pacman":
+        arch_pkgs = search_arch_packages_api(query)
+        aur_pkgs = search_aur_packages_api(query)
+        combined_pkgs = arch_pkgs + aur_pkgs
+        if combined_pkgs:
+            context_blocks.append("Found Arch/AUR Packages:\n" + "\n".join(f" - {p}" for p in combined_pkgs[:7]))
 
     return "\n\n".join(context_blocks)
 
@@ -373,7 +402,7 @@ def get_system_info() -> str:
     info_lines = []
 
     user = os.environ.get("USER", "user")
-    host = os.environ.get("HOSTNAME", "larplinux")
+    host = os.environ.get("HOSTNAME", "linux")
     info_lines.append(f"User/Host: {user}@{host}")
 
     if os.path.exists("/etc/os-release"):
@@ -398,6 +427,9 @@ def get_system_info() -> str:
 
     shell = os.environ.get("SHELL", "/bin/bash")
     info_lines.append(f"Shell: {shell}")
+
+    pkg_name, _, _, _ = detect_package_manager()
+    info_lines.append(f"Package Manager: {pkg_name}")
 
     try:
         cpu_cmd = "grep -m1 'model name' /proc/cpuinfo | cut -d: -f2"
@@ -811,17 +843,34 @@ def query_ollama(prompt: str, extra_web_context: str = "") -> str:
 # =============================================================================
 
 def cmd_fetch():
-    """Aesthetic pastel system informer for LarpLinux."""
-    user = os.environ.get("USER", "dotdok")
-    host = os.environ.get("HOSTNAME", "larp")
-    os_name = "LarpLinux Rolling (Arch-based)"
+    """Aesthetic pastel system informer for LarpLinux and any Linux distribution."""
+    user = os.environ.get("USER", "user")
+    host = os.environ.get("HOSTNAME", "linux")
+    
+    os_name = "Linux"
+    if os.path.exists("/etc/os-release"):
+        try:
+            with open("/etc/os-release", "r") as f:
+                for line in f:
+                    if line.startswith("PRETTY_NAME="):
+                        os_name = line.split("=")[1].strip().strip('\"')
+                        break
+        except Exception:
+            pass
+
     kernel = subprocess.check_output(["uname", "-sr"], text=True).strip() if shutil.which("uname") else "Linux 7.1.5-zen"
     shell = os.environ.get("SHELL", "/bin/bash").split("/")[-1]
-    wm = os.environ.get("XDG_CURRENT_DESKTOP", "Niri / FWM (Wayland)")
+    wm = os.environ.get("XDG_CURRENT_DESKTOP", "Wayland")
     
+    pkg_name, _, _, _ = detect_package_manager()
     pkgs_count = "0"
     try:
-        pkgs_count = subprocess.check_output("pacman -Qq | wc -l", shell=True, text=True).strip()
+        if pkg_name == "pacman":
+            pkgs_count = subprocess.check_output("pacman -Qq | wc -l", shell=True, text=True).strip()
+        elif pkg_name == "apt":
+            pkgs_count = subprocess.check_output("dpkg-query -l | grep '^ii' | wc -l", shell=True, text=True).strip()
+        elif pkg_name == "dnf":
+            pkgs_count = subprocess.check_output("rpm -qa | wc -l", shell=True, text=True).strip()
     except Exception:
         pass
 
@@ -852,7 +901,7 @@ def cmd_fetch():
         f"{CYAN}OS:{RESET}          {WHITE}{os_name}{RESET}",
         f"{CYAN}Kernel:{RESET}      {WHITE}{kernel}{RESET}",
         f"{CYAN}Uptime:{RESET}      {WHITE}{uptime_str}{RESET}",
-        f"{CYAN}Packages:{RESET}    {WHITE}{pkgs_count} (pacman){RESET}",
+        f"{CYAN}Packages:{RESET}    {WHITE}{pkgs_count} ({pkg_name}){RESET}",
         f"{CYAN}Shell:{RESET}       {WHITE}{shell}{RESET}",
         f"{CYAN}Compositor:{RESET}  {PINK}{wm}{RESET}",
         f"{CYAN}AI Engine:{RESET}   {BOLD}{PINK}{ai_provider}{RESET}",
@@ -926,13 +975,13 @@ def cmd_translate(args: list):
 # =============================================================================
 
 def cmd_backup():
-    """Creates a compressed archive of LarpLinux configurations."""
+    """Creates a compressed archive of Larp Linux configurations."""
     print_banner()
     os.makedirs(BACKUPS_DIR, exist_ok=True)
     stamp = time.strftime("%Y%m%d_%H%M%S")
     tar_path = os.path.join(BACKUPS_DIR, f"larp-config-backup-{stamp}.tar.gz")
 
-    print(f"{CYAN}Creating backup of LarpLinux configurations...{RESET}")
+    print(f"{CYAN}Creating backup of Linux configurations...{RESET}")
 
     targets = [
         os.path.expanduser("~/.config/larp"),
@@ -961,7 +1010,7 @@ def cmd_alias():
     """Installs convenient terminal aliases into ~/.bashrc."""
     print_banner()
     aliases = """
-# --- LarpLinux Shortcuts ---
+# --- Larp Shortcuts ---
 alias l='larp'
 alias ld='larp do'
 alias lw='larp why'
@@ -987,7 +1036,7 @@ def cmd_do(args: list):
     """Autonomous AI Shell Copilot — translates natural instructions into bash commands."""
     print_banner()
     if not args:
-        print(f"{PINK}LarpLinux Autonomous Shell Copilot!{RESET}")
+        print(f"{PINK}Larp Autonomous Shell Copilot!{RESET}")
         print(f"{CYAN}Describe the terminal action you want to execute:{RESET}")
         try:
             task = input(" > ").strip()
@@ -1004,7 +1053,7 @@ def cmd_do(args: list):
     print(f"{CYAN}AI Copilot designing command pipeline for:{RESET} {BOLD}{task}{RESET}...\n")
 
     prompt = (
-        f"The user wants to perform the following terminal task in LarpLinux:\n\"{task}\"\n\n"
+        f"The user wants to perform the following terminal task in Linux:\n\"{task}\"\n\n"
         f"Provide a SINGLE safe and exact one-liner bash command pipeline.\n"
         f"Do NOT output any markdown or explanation before/after! Only the one-liner command."
     )
@@ -1033,35 +1082,19 @@ def cmd_do(args: list):
 # =============================================================================
 
 def cmd_clean():
-    """Disk cleanup and system optimization wizard."""
+    """Disk cleanup and system optimization wizard across Linux distros."""
     print_banner()
-    print(f"{BOLD}{PINK}LarpLinux System Cleanup & Optimization Wizard:{RESET}\n")
+    print(f"{BOLD}{PINK}Larp System Cleanup & Optimization Wizard:{RESET}\n")
 
     cleaned_items = []
+    pkg_name, _, _, clean_cmd = detect_package_manager()
 
-    try:
-        orphans = subprocess.check_output("pacman -Qtdq", shell=True, text=True, stderr=subprocess.DEVNULL).strip().splitlines()
-        if orphans:
-            print(f"  {CYAN}Found orphan packages:{RESET} {len(orphans)} ({', '.join(orphans[:5])}...)")
-            ans = input(f"  {PINK}Remove orphan packages (sudo pacman -Rns ...)? (y/N): {RESET}").strip().lower()
-            if ans in ["y", "yes", "yeah"]:
-                subprocess.run(f"sudo pacman -Rns --noconfirm {' '.join(orphans)}", shell=True)
-                cleaned_items.append("Orphan pacman packages")
-        else:
-            print(f"  {GREEN}[+] No orphan packages found.{RESET}")
-    except Exception:
-        print(f"  {GREEN}[+] No orphan packages found.{RESET}")
-
-    cache_dir = "/var/cache/pacman/pkg"
-    if os.path.exists(cache_dir):
-        try:
-            print(f"\n  {CYAN}Cleaning unneeded pacman package cache...{RESET}")
-            ans = input(f"  {PINK}Clean package cache (sudo pacman -Sc)? (y/N): {RESET}").strip().lower()
-            if ans in ["y", "yes", "yeah"]:
-                subprocess.run("sudo pacman -Sc --noconfirm", shell=True)
-                cleaned_items.append("Pacman package cache")
-        except Exception:
-            pass
+    if clean_cmd:
+        print(f"  {CYAN}Cleaning package manager cache and unneeded packages ({pkg_name})...{RESET}")
+        ans = input(f"  {PINK}Clean package cache ({clean_cmd})? (y/N): {RESET}").strip().lower()
+        if ans in ["y", "yes", "yeah"]:
+            subprocess.run(clean_cmd, shell=True)
+            cleaned_items.append(f"{pkg_name} package cache")
 
     print(f"\n  {CYAN}Cleaning old systemd logs (older than 7 days)...{RESET}")
     ans = input(f"  {PINK}Vacuum journalctl logs? (y/N): {RESET}").strip().lower()
@@ -1087,7 +1120,7 @@ def cmd_clean():
 def cmd_bench():
     """Benchmark speed and latency of configured AI providers."""
     print_banner()
-    print(f"{BOLD}{PINK}LarpLinux AI Provider Benchmark & Speedtest:{RESET}\n")
+    print(f"{BOLD}{PINK}Larp AI Provider Benchmark & Speedtest:{RESET}\n")
 
     config = load_config()
     test_prompt = "Write three brief sentences highlighting key advantages of Linux."
@@ -1317,7 +1350,7 @@ def make_bar(percent: float, length: int = 20) -> str:
 
 def cmd_status():
     print_banner()
-    print(f"{BOLD}{PINK}LarpLinux System Radar & Hardware Diagnostics:{RESET}\n")
+    print(f"{BOLD}{PINK}Larp System Radar & Hardware Diagnostics:{RESET}\n")
     config = load_config()
 
     sys_info = []
@@ -1351,7 +1384,7 @@ def cmd_status():
     except Exception:
         pass
 
-    wm_info = os.environ.get("XDG_CURRENT_DESKTOP", "Niri/FWM (Wayland)")
+    wm_info = os.environ.get("XDG_CURRENT_DESKTOP", "Wayland")
     sys_info.append(f"  {CYAN}Compositor:{RESET}     {PINK}{wm_info}{RESET}")
 
     current_provider = config.get("provider", "ollama").upper()
@@ -1387,7 +1420,7 @@ def cmd_chat():
     print_banner()
     config = load_config()
     provider_name = config.get("provider", "ollama").upper()
-    print_box("Larp AI Interactive Session", f"{PINK}Interactive Larp AI Session ({provider_name})!{RESET}\n{DIM}Type 'exit' or 'quit' to leave session.{RESET}\n{CYAN}All answers tailored specifically for LarpLinux.{RESET}")
+    print_box("Larp AI Interactive Session", f"{PINK}Interactive Larp AI Session ({provider_name})!{RESET}\n{DIM}Type 'exit' or 'quit' to leave session.{RESET}")
     print()
 
     history = []
@@ -1448,24 +1481,24 @@ def cmd_help():
     print(f"{BOLD}{PINK}Usage:{RESET}")
     print(f"  {CYAN}larp{RESET} <command> [arguments]\n")
     print(f"{BOLD}{PINK}Available Commands (19 Integrated Modules):{RESET}")
-    print(f"  {PINK}{BOLD}fetch{RESET}                {DIM}Aesthetic system informer (Larp Neofetch){RESET}")
+    print(f"  {PINK}{BOLD}fetch{RESET}                {DIM}Aesthetic system informer (Neofetch replacement){RESET}")
     print(f"  {PINK}{BOLD}do{RESET} {CYAN}<task>{RESET}           {DIM}Autonomous AI Terminal Copilot — translates tasks to shell pipelines{RESET}")
     print(f"  {PINK}{BOLD}code{RESET} {CYAN}<task>{RESET}         {DIM}AI Code and script generator{RESET}")
     print(f"  {PINK}{BOLD}translate{RESET} {CYAN}<text>{RESET}      {DIM}Instant AI multilingual translator{RESET}")
     print(f"  {PINK}{BOLD}config{RESET}               {DIM}Interactive provider configuration TUI menu{RESET}")
-    print(f"  {PINK}{BOLD}clean{RESET}                {DIM}Disk cleanup — pacman cache, journalctl logs & orphans{RESET}")
-    print(f"  {PINK}{BOLD}backup{RESET}               {DIM}Snapshot & config backup manager (niri, fwm, waybar, larp){RESET}")
+    print(f"  {PINK}{BOLD}clean{RESET}                {DIM}Disk cleanup — package cache, journalctl logs & orphans{RESET}")
+    print(f"  {PINK}{BOLD}backup{RESET}               {DIM}Snapshot & config backup manager{RESET}")
     print(f"  {PINK}{BOLD}alias{RESET}                {DIM}Install short terminal shortcuts (l, ld, lw, lc, lg, lf) into ~/.bashrc{RESET}")
     print(f"  {PINK}{BOLD}bench{RESET}                {DIM}Speedtest & latency benchmark for all AI providers{RESET}")
     print(f"  {PINK}{BOLD}status{RESET}               {DIM}System radar — CPU/RAM/Disk loads & active AI engine{RESET}")
     print(f"  {PINK}{BOLD}monitor{RESET}              {DIM}Live real-time interactive system dashboard{RESET}")
     print(f"  {PINK}{BOLD}history{RESET}              {DIM}View recent Larp AI prompt & response logs{RESET}")
     print(f"  {PINK}{BOLD}chat{RESET}                 {DIM}Terminal interactive conversation session with Larp AI{RESET}")
-    print(f"  {PINK}{BOLD}why{RESET} {CYAN}<query>{RESET}         {DIM}Query solver using AI [{active_p}] + Live Web & Arch DB Search{RESET}")
+    print(f"  {PINK}{BOLD}why{RESET} {CYAN}<query>{RESET}         {DIM}Query solver using AI [{active_p}] + Live Web Search{RESET}")
     print(f"  {PINK}{BOLD}fix{RESET}                  {DIM}System log error diagnoser with 1-click Auto-Repair Engine{RESET}")
     print(f"  {PINK}{BOLD}get{RESET} {CYAN}<package>{RESET}        {DIM}Install software pack or recipe from Larp-Repo{RESET}")
-    print(f"  {PINK}{BOLD}get-list{RESET}             {DIM}Registry of all available LarpLinux software packs{RESET}")
-    print(f"  {PINK}{BOLD}get-create{RESET} {CYAN}<task>{RESET}   {DIM}AI Pack Architect with live Arch/AUR package validation{RESET}")
+    print(f"  {PINK}{BOLD}get-list{RESET}             {DIM}Registry of all available Linux software packs{RESET}")
+    print(f"  {PINK}{BOLD}get-create{RESET} {CYAN}<task>{RESET}   {DIM}AI Pack Architect with live package validation{RESET}")
     print(f"  {PINK}{BOLD}help{RESET}                 {DIM}Display this help menu{RESET}")
     print()
 
@@ -1484,7 +1517,7 @@ def cmd_get_list():
 def cmd_get_create(args: list):
     print_banner()
     if not args:
-        print(f"{PINK}LarpLinux AI Pack Architect with Web Access!{RESET}")
+        print(f"{PINK}Larp AI Pack Architect with Web Access!{RESET}")
         print(f"{CYAN}Describe the software pack you need to construct:{RESET}")
         try:
             task_desc = input(" > ").strip()
@@ -1498,17 +1531,19 @@ def cmd_get_create(args: list):
         print(f"{YELLOW}[!] Task description cannot be empty.{RESET}")
         sys.exit(1)
 
-    print(f"\n{CYAN}Searching Arch Linux & AUR repositories for:{RESET} {BOLD}{task_desc}{RESET}...")
+    print(f"\n{CYAN}Searching Linux repositories for:{RESET} {BOLD}{task_desc}{RESET}...")
     web_context = get_full_web_context(task_desc)
 
     print(f"{CYAN}Designing verified package suite...{RESET}\n")
 
+    pkg_name, install_cmd, _, _ = detect_package_manager()
+
     prompt = (
         f"The user wants to create a software pack for the task:\n\"{task_desc}\"\n\n"
         f"RULES:\n"
-        f"1. Choose ONLY real, existing Arch Linux / AUR packages.\n"
+        f"1. Choose ONLY real, existing Linux packages for active package manager: {pkg_name}.\n"
         f"2. Give a brief explanation (2 sentences).\n"
-        f"3. Provide a single installation command: `sudo pacman -S --needed <packages>`\n"
+        f"3. Provide a single installation command: `{install_cmd} <packages>`\n"
         f"4. End response with: PACK_NAME: <short-pack-name>"
     )
 
@@ -1525,9 +1560,9 @@ def cmd_get_create(args: list):
                 suggested_name = parsed
             continue
 
-        if any(token in line for token in ["sudo pacman", "curl", "yay", "paru"]):
+        if any(token in line for token in ["sudo pacman", "sudo apt", "sudo dnf", "sudo zypper", "curl"]):
             clean_line = sanitize_shell_command(line)
-            extracted = re.sub(r'^.*?(sudo pacman|curl|yay|paru)', r'\1', clean_line)
+            extracted = re.sub(r'^.*?(sudo pacman|sudo apt|sudo dnf|sudo zypper|curl)', r'\1', clean_line)
             if not cmd_to_run:
                 cmd_to_run = sanitize_shell_command(extracted)
 
@@ -1567,7 +1602,7 @@ def cmd_why(args: list):
     print_banner()
     print(f"{BOLD}{CYAN}Question:{RESET} {question}\n")
 
-    print(f"{CYAN}Searching Web & Arch Repositories (DuckDuckGo + Arch DB)...{RESET}")
+    print(f"{CYAN}Searching Web & Repositories (DuckDuckGo Search)...{RESET}")
     web_context = get_full_web_context(question)
 
     response = query_ollama(question, extra_web_context=web_context)
@@ -1594,7 +1629,7 @@ def cmd_fix(args: list = None):
         return
 
     prompt = (
-        f"Here are the 20 most recent critical system logs from LarpLinux (journalctl -p 3 -n 20):\n\n"
+        f"Here are the 20 most recent critical system logs (journalctl -p 3 -n 20):\n\n"
         f"```\n{logs}\n```\n\n"
         f"1. Explain the root cause in 2-3 brief sentences.\n"
         f"2. Provide an exact one-liner bash resolution command formatted as: FIX_CMD: <fix_command>"
@@ -1612,9 +1647,9 @@ def cmd_fix(args: list = None):
             extracted = line.split("FIX_CMD:")[1].strip()
             cmd_to_fix = sanitize_shell_command(extracted)
             continue
-        elif any(token in line for token in ["sudo systemctl", "sudo pacman", "systemctl restart", "sudo rm", "sudo chmod", "sudo sed"]):
+        elif any(token in line for token in ["sudo systemctl", "sudo pacman", "sudo apt", "sudo dnf", "systemctl restart", "sudo rm", "sudo chmod", "sudo sed"]):
             clean_line = sanitize_shell_command(line)
-            extracted = re.sub(r'^.*?(sudo systemctl|systemctl|sudo pacman|sudo rm|sudo chmod|sudo sed)', r'\1', clean_line)
+            extracted = re.sub(r'^.*?(sudo systemctl|systemctl|sudo pacman|sudo apt|sudo dnf|sudo rm|sudo chmod|sudo sed)', r'\1', clean_line)
             if not cmd_to_fix:
                 cmd_to_fix = sanitize_shell_command(extracted)
         clean_lines.append(line)
@@ -1673,7 +1708,7 @@ def cmd_get(args: list):
             print(f"\n{RED}[-] Execution error: {e}{RESET}\n")
     else:
         print(f"{PINK}[Larp-Repo]{RESET} {CYAN}Searching recipe registry for:{RESET} {BOLD}{pkg_name}{RESET}")
-        print(f"{DIM}─── Scanning official LarpLinux repository...{RESET}")
+        print(f"{DIM}─── Scanning official Larp repository...{RESET}")
         time.sleep(0.3)
         print(f"\n{LIGHT_PINK}Recipe '{pkg_name}' not found in Larp-Repo registry.{RESET}")
         print(f"{DIM}You can generate it automatically using: {RESET}{CYAN}larp get-create {pkg_name}{RESET}\n")
