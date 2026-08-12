@@ -31,14 +31,14 @@
 Run the automated one-line installer:
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/larplinux/larp/main/install.sh | bash
+curl -sSL https://raw.githubusercontent.com/dotdok132/LarpHelper/main/install.sh | bash
 ```
 
 Or clone the repository and run locally:
 
 ```bash
-git clone https://github.com/larplinux/larp.git
-cd larp
+git clone https://github.com/dotdok132/LarpHelper.git
+cd LarpHelper
 chmod +x install.sh
 ./install.sh
 ```

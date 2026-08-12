@@ -40,7 +40,7 @@ SOURCE_BIN="${SCRIPT_DIR}/bin/larp"
 if [ ! -f "$SOURCE_BIN" ]; then
     echo -e "${CYAN}[+] Downloading latest larp release...${RESET}"
     TMP_DIR=$(mktemp -d)
-    curl -sSL "https://raw.githubusercontent.com/larplinux/larp/main/bin/larp" -o "${TMP_DIR}/larp"
+    curl -sSL "https://raw.githubusercontent.com/dotdok132/LarpHelper/main/bin/larp" -o "${TMP_DIR}/larp"
     SOURCE_BIN="${TMP_DIR}/larp"
 fi
 
