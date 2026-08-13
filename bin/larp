@@ -774,7 +774,7 @@ def _wav_has_audio(path: str, threshold: int = 250) -> bool:
 
 
 def record_user_speech(duration_sec: int = None, auto_stop: bool = None) -> str:
-    """Records microphone audio using arecord or pw-record with live level meter and VAD auto-stop."""
+    """Records microphone audio using pw-record, ffmpeg (pulse), or arecord with live level meter and VAD auto-stop."""
     config = load_config()
     vc = config.get("voice", {})
     if duration_sec is None:
@@ -782,9 +782,9 @@ def record_user_speech(duration_sec: int = None, auto_stop: bool = None) -> str:
     if auto_stop is None:
         auto_stop = vc.get("auto_stop_silence", True)
 
-    recorder = shutil.which("arecord") or shutil.which("pw-record")
+    recorder = shutil.which("pw-record") or shutil.which("ffmpeg") or shutil.which("arecord")
     if not recorder:
-        print(f"{RED}[-] Error: No audio recorder found (install alsa-utils: pacman -S alsa-utils){RESET}")
+        print(f"{RED}[-] Error: No audio recorder found (install pipewire, ffmpeg, or alsa-utils){RESET}")
         return ""
 
     if os.path.exists(TMP_AUDIO_INPUT):
@@ -798,11 +798,14 @@ def record_user_speech(duration_sec: int = None, auto_stop: bool = None) -> str:
 
     proc = None
     try:
-        if shutil.which("arecord"):
-            cmd = ["arecord", "-f", "S16_LE", "-r", "16000", "-c", "1", "-q", TMP_AUDIO_INPUT]
+        if shutil.which("pw-record"):
+            cmd = ["pw-record", "--rate", "16000", "--channels", "1", TMP_AUDIO_INPUT]
+            proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        elif shutil.which("ffmpeg"):
+            cmd = ["ffmpeg", "-y", "-f", "pulse", "-i", "default", "-ac", "1", "-ar", "16000", TMP_AUDIO_INPUT]
             proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         else:
-            cmd = ["pw-record", "--target", "auto", "--rate", "16000", "--channels", "1", TMP_AUDIO_INPUT]
+            cmd = ["arecord", "-D", "default", "-f", "S16_LE", "-r", "16000", "-c", "1", "-q", TMP_AUDIO_INPUT]
             proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
         start_time = time.time()
@@ -820,11 +823,11 @@ def record_user_speech(duration_sec: int = None, auto_stop: bool = None) -> str:
             viz.set_level(rms)
 
             if elapsed < 0.3:
-                ambient_baseline = max(50.0, rms)
+                ambient_baseline = max(40.0, rms)
                 continue
 
-            speech_thresh = max(350.0, ambient_baseline * 2.0)
-            silence_thresh = max(220.0, ambient_baseline * 1.3)
+            speech_thresh = max(180.0, ambient_baseline * 1.4)
+            silence_thresh = max(130.0, ambient_baseline * 1.1)
 
             if rms > speech_thresh:
                 has_speech = True
@@ -902,8 +905,8 @@ def _detect_stt_engine(config: dict) -> str:
 
 
 def transcribe_audio_stt(audio_path: str) -> str:
-    """Transcribes audio file to text.
-    Priority: Groq Whisper API > OpenAI Whisper API > local whisper CLI > whisper.cpp
+    """Transcribes audio file to text using multilingual auto-detection.
+    Priority: Groq Whisper API > OpenAI Whisper API > Python whisper module > local whisper CLI > whisper.cpp
     """
     if not audio_path or not os.path.exists(audio_path):
         return ""
@@ -934,11 +937,22 @@ def transcribe_audio_stt(audio_path: str) -> str:
         if result is not None:
             return result
 
-    # --- 3. Local whisper Python CLI ---
+    # --- 3. Direct Python whisper module (multilingual) ---
+    try:
+        import whisper
+        m = whisper.load_model(whisper_model)
+        res = m.transcribe(audio_path)
+        text = res.get("text", "").strip()
+        if text:
+            return text
+    except Exception:
+        pass
+
+    # --- 4. Local whisper CLI ---
     if shutil.which("whisper"):
         try:
             result = subprocess.run(
-                ["whisper", audio_path, "--language", "ru", "--model", whisper_model,
+                ["whisper", audio_path, "--model", whisper_model,
                  "--output_format", "txt", "--output_dir", "/tmp", "--fp16", "False"],
                 capture_output=True, text=True, timeout=60
             )
@@ -953,7 +967,7 @@ def transcribe_audio_stt(audio_path: str) -> str:
         except Exception:
             pass
 
-    # --- 4. whisper.cpp binary ---
+    # --- 5. whisper.cpp binary ---
     for binary in ["whisper-cpp", "whisper.cpp", "main"]:
         if shutil.which(binary):
             model_paths = [
@@ -965,7 +979,7 @@ def transcribe_audio_stt(audio_path: str) -> str:
             if model_path:
                 try:
                     result = subprocess.run(
-                        [binary, "-m", model_path, "-f", audio_path, "-l", "ru", "-otxt"],
+                        [binary, "-m", model_path, "-f", audio_path, "-otxt"],
                         capture_output=True, text=True, timeout=30
                     )
                     lines = [l.strip() for l in result.stdout.splitlines() if l.strip()]
@@ -986,8 +1000,6 @@ def _whisper_api_request(audio_path: str, api_key: str, endpoint: str, model: st
         body = bytearray()
         body.extend(f"--{boundary}\r\n".encode())
         body.extend(f'Content-Disposition: form-data; name="model"\r\n\r\n{model}\r\n'.encode())
-        body.extend(f"--{boundary}\r\n".encode())
-        body.extend(b'Content-Disposition: form-data; name="language"\r\n\r\nru\r\n')
         body.extend(f"--{boundary}\r\n".encode())
         body.extend(b'Content-Disposition: form-data; name="file"; filename="audio.wav"\r\n')
         body.extend(b'Content-Type: audio/wav\r\n\r\n')
