@@ -1243,7 +1243,7 @@ def _setup_voice_engine_installer(config: dict):
     vc = config.get("voice", {})
     pkg_name, install_prefix, _, _ = detect_package_manager()
 
-    print(f"\n{BOLD}{PINK}=== Select & Auto-Install Voice Engine ==={RESET}\n")
+    print(f"\n{BOLD}{PINK}=== Select & Auto-Install Voice Engine [{pkg_name.upper()}] ==={RESET}\n")
     print(f"1) 🌸 RHVoice Elena (Russian Female, Natural Offline Voice)")
     print(f"2) 👨 RHVoice Aleksandr (Russian Male, Natural Offline Voice)")
     print(f"3) 🌟 OpenAI Nova (Studio Quality Online Voice)")
@@ -1263,8 +1263,20 @@ def _setup_voice_engine_installer(config: dict):
         print(f"\n{PINK}[+] Auto-installing RHVoice ({voice_target}) via {pkg_name}...{RESET}")
         if pkg_name == "pacman":
             cmd = f"{install_prefix} rhvoice rhvoice-language-russian {voice_pkg}"
+        elif pkg_name == "xbps":
+            cmd = f"{install_prefix} RHVoice"
         elif pkg_name == "apt":
             cmd = f"{install_prefix} rhvoice rhvoice-russian"
+        elif pkg_name == "dnf":
+            cmd = f"{install_prefix} RHVoice rhvoice-russian"
+        elif pkg_name == "zypper":
+            cmd = f"{install_prefix} RHVoice"
+        elif pkg_name == "apk":
+            cmd = f"{install_prefix} rhvoice"
+        elif pkg_name == "eopkg":
+            cmd = f"{install_prefix} rhvoice"
+        elif pkg_name == "emerge":
+            cmd = f"{install_prefix} app-accessibility/rhvoice"
         else:
             cmd = f"{install_prefix} rhvoice"
 
@@ -1276,7 +1288,7 @@ def _setup_voice_engine_installer(config: dict):
             config["voice"] = vc
             save_config(config)
             print(f"{GREEN}[+] RHVoice ({voice_target}) installed and set as active voice!{RESET}")
-            tts_synthesize_and_play(f"Голос {voice_target} успешно установлен и подключён!")
+            tts_synthesize_and_play(f"Голос {voice_target} успешно установлен на {pkg_name} и подключён!")
         else:
             print(f"{YELLOW}[!] Package installation finished with exit code {res.returncode}.{RESET}")
 
