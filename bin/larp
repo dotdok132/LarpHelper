@@ -192,9 +192,10 @@ _HUD_FULL_SCREEN = False
 
 
 def _render_talk_hud(status_tag: str, title: str, user_text: str = "", ai_text: str = "", level: float = 0.0, step: int = 0):
-    """Renders a full-console Cyberpunk TUI Studio HUD / Visualizer Canvas for larp talk."""
-    cols, lines = shutil.get_terminal_size((80, 24))
-    cols = max(64, cols)
+    """Renders a full-console 2D Cyberpunk Studio HUD / Visualizer Canvas for larp talk."""
+    cols, rows = shutil.get_terminal_size((80, 24))
+    cols = max(60, cols)
+    rows = max(16, rows)
 
     header = " LARP LINUX — UNIVERSAL AI VOICE COMPANION v4.1.0 "
     header_line = f"┌─{header}─{'─' * max(0, cols - len(header) - 5)}┐"
@@ -211,55 +212,69 @@ def _render_talk_hud(status_tag: str, title: str, user_text: str = "", ai_text: 
     else:
         face = "(^_^) "
 
-    wave_chars = [" ", " ", "▂", "▃", "▄", "▅", "▆", "▇", "█"]
-    num_bars = min(36, cols - 24)
-    bar_list = []
-
-    if "SPEAK" in status_tag:
-        for i in range(num_bars):
-            val = int(3.5 + 3.5 * math.sin(step * 0.4 + i * 0.3))
-            bar_list.append(wave_chars[max(0, min(7, val))])
-    elif "REC" in status_tag or "LISTEN" in status_tag:
-        base_idx = int(level * 7)
-        for i in range(num_bars):
-            var = math.sin(step * 0.5 + i * 0.4) * 0.35 + 0.65
-            idx = max(0, min(7, int(base_idx * var * 2.5)))
-            if level < 0.05:
-                idx = 0 if (i + step) % 6 != 0 else 1
-            bar_list.append(wave_chars[idx])
-    elif "THINK" in status_tag or "STT" in status_tag or "TRANSCRIB" in status_tag:
-        for i in range(num_bars):
-            val = int(3.5 + 3.5 * math.sin(step * 0.6 + i * 0.5))
-            bar_list.append(wave_chars[max(0, min(7, val))])
-    else:
-        bar_list = ["▂"] * num_bars
-
-    wave_str = "".join(bar_list)
-
-    sys.stdout.write("\033[H\033[J")
-    sys.stdout.write(f"{PINK}{BOLD}{header_line}{RESET}\n")
+    buffer = []
+    buffer.append(f"{PINK}{BOLD}{header_line}{RESET}")
 
     box_w = cols - 4
+    status_color = GREEN if "REC" in status_tag or "LISTEN" in status_tag else YELLOW if "THINK" in status_tag or "STT" in status_tag else PINK
+    
     pad_title = title.center(box_w)
     pad_face = f"Larp Voice Core:  {face}".center(box_w)
-    pad_wave = f"[{wave_str}]".center(box_w)
 
-    status_color = GREEN if "REC" in status_tag or "LISTEN" in status_tag else YELLOW if "THINK" in status_tag or "STT" in status_tag else PINK
+    buffer.append(f"{PINK}│{RESET} {status_color}{BOLD}{pad_title}{RESET} {PINK}│{RESET}")
+    buffer.append(f"{PINK}│{RESET} {CYAN}{BOLD}{pad_face}{RESET} {PINK}│{RESET}")
+    buffer.append(f"{PINK}├{'─' * (cols - 2)}┤{RESET}")
 
-    sys.stdout.write(f"{PINK}│{RESET} {status_color}{BOLD}{pad_title}{RESET} {PINK}│{RESET}\n")
-    sys.stdout.write(f"{PINK}│{RESET} {CYAN}{BOLD}{pad_face}{RESET} {PINK}│{RESET}\n")
-    sys.stdout.write(f"{PINK}│{RESET} {PINK}{pad_wave}{RESET} {PINK}│{RESET}\n")
-    sys.stdout.write(f"{PINK}├{'─' * (cols - 2)}┤{RESET}\n")
+    # Calculate 2D visualizer canvas height to fill terminal screen
+    viz_height = max(5, rows - 11)
+    bar_count = min(60, cols - 6)
 
+    # Calculate peak heights for each column
+    column_levels = []
+    t = step * 0.1
+    for i in range(bar_count):
+        if "SPEAK" in status_tag:
+            val = (0.5 + 0.5 * math.sin(t * 5 + i * 0.28))
+        elif "REC" in status_tag or "LISTEN" in status_tag:
+            val = min(1.0, level * 2.2) * (0.5 + 0.5 * math.sin(t * 6 + i * 0.35))
+            if level < 0.04:
+                val = 0.08 if (i + step) % 5 == 0 else 0.02
+        elif "THINK" in status_tag or "STT" in status_tag or "TRANSCRIB" in status_tag:
+            val = (0.5 + 0.5 * math.sin(t * 8 + i * 0.4))
+        else:
+            val = 0.1
+        column_levels.append(int((viz_height - 1) * val))
+
+    # Build 2D multi-row matrix rows
+    for r in range(viz_height - 1, -1, -1):
+        row_chars = []
+        for c in range(bar_count):
+            h = column_levels[c]
+            if h > r:
+                row_chars.append("█")
+            elif h == r:
+                row_chars.append("▄")
+            else:
+                row_chars.append(" ")
+
+        line_str = "".join(row_chars).center(cols - 4)
+        c_color = PINK if r > viz_height * 0.5 else CYAN
+        buffer.append(f"{PINK}│{RESET} {c_color}{line_str}{RESET} {PINK}│{RESET}")
+
+    # Conversation Footer Box
+    buffer.append(f"{PINK}├{'─' * (cols - 2)}┤{RESET}")
     u_disp = (user_text[:cols - 16] + "...") if len(user_text) > cols - 16 else (user_text or "(listening...)")
     ai_disp = (ai_text[:cols - 16] + "...") if len(ai_text) > cols - 16 else (ai_text or "(waiting for query...)")
 
     u_line = f" You:  {u_disp}"
     ai_line = f" Larp: {ai_disp}"
 
-    sys.stdout.write(f"{PINK}│{RESET} {CYAN}{BOLD}{u_line:<{cols-4}}{RESET} {PINK}│{RESET}\n")
-    sys.stdout.write(f"{PINK}│{RESET} {PINK}{BOLD}{ai_line:<{cols-4}}{RESET} {PINK}│{RESET}\n")
-    sys.stdout.write(f"{PINK}└{'─' * (cols - 2)}┘{RESET}\n")
+    buffer.append(f"{PINK}│{RESET} {CYAN}{BOLD}{u_line:<{cols-4}}{RESET} {PINK}│{RESET}")
+    buffer.append(f"{PINK}│{RESET} {PINK}{BOLD}{ai_line:<{cols-4}}{RESET} {PINK}│{RESET}")
+    buffer.append(f"{PINK}└{'─' * (cols - 2)}┘{RESET}")
+
+    sys.stdout.write("\033[H\033[J")
+    sys.stdout.write("\n".join(buffer))
     sys.stdout.flush()
 
 
