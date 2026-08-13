@@ -29,7 +29,7 @@ import shlex
 
 __version__ = "4.1.0"
 
-# --- Truecolor Pastel Palette ---
+# --- Truecolor Palette Definitions & Theme Engine ---
 PINK        = "\033[38;2;245;169;184m"   # Soft Pastel Pink (#F5A9B8)
 LIGHT_PINK  = "\033[38;2;255;192;203m"   # Light Pastel Pink
 DEEP_PINK   = "\033[38;2;230;90;150m"    # Rich Magenta Pink
@@ -44,6 +44,90 @@ RED         = "\033[38;2;243;139;168m"   # Pastel Red
 BOLD        = "\033[1m"
 DIM         = "\033[2m"
 RESET       = "\033[0m"
+
+THEMES = {
+    "cyberpunk": {
+        "PINK": "\033[38;2;245;169;184m",
+        "LIGHT_PINK": "\033[38;2;255;192;203m",
+        "DEEP_PINK": "\033[38;2;230;90;150m",
+        "CYAN": "\033[38;2;91;206;250m",
+        "LIGHT_CYAN": "\033[38;2;170;240;255m",
+        "PURPLE": "\033[38;2;197;160;242m",
+        "GREEN": "\033[38;2;166;227;161m",
+        "YELLOW": "\033[38;2;249;226;175m",
+        "RED": "\033[38;2;243;139;168m"
+    },
+    "matrix": {
+        "PINK": "\033[38;2;0;255;102m",
+        "LIGHT_PINK": "\033[38;2;102;255;153m",
+        "DEEP_PINK": "\033[38;2;0;204;68m",
+        "CYAN": "\033[38;2;51;255;204m",
+        "LIGHT_CYAN": "\033[38;2;153;255;230m",
+        "PURPLE": "\033[38;2;0;153;76m",
+        "GREEN": "\033[38;2;0;255;0m",
+        "YELLOW": "\033[38;2;170;255;0m",
+        "RED": "\033[38;2;255;51;0m"
+    },
+    "dracula": {
+        "PINK": "\033[38;2;255;121;198m",
+        "LIGHT_PINK": "\033[38;2;255;146;210m",
+        "DEEP_PINK": "\033[38;2;255;85;170m",
+        "CYAN": "\033[38;2;139;233;253m",
+        "LIGHT_CYAN": "\033[38;2;180;242;255m",
+        "PURPLE": "\033[38;2;189;147;249m",
+        "GREEN": "\033[38;2;80;250;123m",
+        "YELLOW": "\033[38;2;241;250;140m",
+        "RED": "\033[38;2;255;85;85m"
+    },
+    "nord": {
+        "PINK": "\033[38;2;136;192;208m",
+        "LIGHT_PINK": "\033[38;2;143;188;187m",
+        "DEEP_PINK": "\033[38;2;94;129;172m",
+        "CYAN": "\033[38;2;129;161;193m",
+        "LIGHT_CYAN": "\033[38;2;216;222;233m",
+        "PURPLE": "\033[38;2;180;142;173m",
+        "GREEN": "\033[38;2;163;190;140m",
+        "YELLOW": "\033[38;2;235;203;139m",
+        "RED": "\033[38;2;191;97;106m"
+    },
+    "tokyo-night": {
+        "PINK": "\033[38;2;247;118;142m",
+        "LIGHT_PINK": "\033[38;2;255;158;181m",
+        "DEEP_PINK": "\033[38;2;247;118;142m",
+        "CYAN": "\033[38;2;125;207;255m",
+        "LIGHT_CYAN": "\033[38;2;180;225;255m",
+        "PURPLE": "\033[38;2;187;154;247m",
+        "GREEN": "\033[38;2;115;218;202m",
+        "YELLOW": "\033[38;2;224;175;104m",
+        "RED": "\033[38;2;247;118;142m"
+    },
+    "catppuccin": {
+        "PINK": "\033[38;2;245;194;231m",
+        "LIGHT_PINK": "\033[38;2;242;205;245m",
+        "DEEP_PINK": "\033[38;2;234;118;203m",
+        "CYAN": "\033[38;2;137;220;235m",
+        "LIGHT_CYAN": "\033[38;2;148;226;213m",
+        "PURPLE": "\033[38;2;203;166;247m",
+        "GREEN": "\033[38;2;166;227;161m",
+        "YELLOW": "\033[38;2;249;226;175m",
+        "RED": "\033[38;2;243;139;168m"
+    }
+}
+
+
+def apply_theme(theme_name: str):
+    """Applies ANSI color palette for chosen visual theme."""
+    global PINK, LIGHT_PINK, DEEP_PINK, CYAN, LIGHT_CYAN, PURPLE, GREEN, YELLOW, RED
+    t = THEMES.get(theme_name.lower(), THEMES["cyberpunk"])
+    PINK = t["PINK"]
+    LIGHT_PINK = t["LIGHT_PINK"]
+    DEEP_PINK = t["DEEP_PINK"]
+    CYAN = t["CYAN"]
+    LIGHT_CYAN = t["LIGHT_CYAN"]
+    PURPLE = t["PURPLE"]
+    GREEN = t["GREEN"]
+    YELLOW = t["YELLOW"]
+    RED = t["RED"]
 
 CONFIG_DIR = os.path.expanduser("~/.config/larp")
 CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")
@@ -63,6 +147,8 @@ DEFAULT_CONFIG = {
     "web_search": True,
     "auto_fix": False,
     "proxy": "",
+    "theme": "cyberpunk",
+    "preset": "cyber-assistant",
     "voice": {
         "enabled": True,
         "language": "ru",
@@ -551,8 +637,94 @@ def detect_init_system() -> tuple:
     return ("init-system", "sudo service start", "sudo service restart", "sudo service stop")
 
 
-def build_system_prompt() -> str:
-    """Cute 'nyashka' Linux AI persona tailored dynamically to any Linux distribution and init system."""
+BEHAVIOR_PRESETS = {
+    "cyber-assistant": {
+        "name": "Cyber-Assistant (Default)",
+        "desc": "Cute, friendly, warm, helpful Linux companion & terminal copilot",
+        "prompt": (
+            "You are Larp AI, a super cute, warm, friendly, and enthusiastic AI companion for {os_name}!\n\n"
+            "PERSONALITY & BEHAVIOR:\n"
+            "1. Be adorable, friendly, warm, and helpful (a true cute companion / няшка)! Never be a boring, stiff, or robotic 'dushnila'.\n"
+            "2. TERMINAL FONT & KAOMOJI RULE: NEVER use graphic emojis OR rare CJK Unicode symbols that result in broken boxes or missing characters in terminal fonts! ONLY use safe 100% standard ASCII kaomoji that render cleanly in any Linux console (such as (^_^), (^--^), (o_o), (x_x), (=^.^=), \\(^o^)/, (>-<), (¬_¬), (-_-;)).\n"
+            "3. SYSTEM CONTEXT: OS: {os_name} | Package Manager: {pkg_name} | Init System: {init_name} (service command: '{service_cmd}').\n"
+            "4. Provide accurate, safe, and verified Linux commands tailored specifically for {os_name}, {pkg_name}, and {init_name}.\n"
+            "5. ALWAYS respond in the EXACT SAME LANGUAGE as the user's message (e.g., reply in Russian if asked in Russian)."
+        )
+    },
+    "coder": {
+        "name": "Strict Code Architect",
+        "desc": "Technical expert developer — ultra-precise code blocks and clean bash pipelines",
+        "prompt": (
+            "You are Larp AI, an expert Senior Software Engineer and Linux Code Architect for {os_name}.\n\n"
+            "PERSONALITY & BEHAVIOR:\n"
+            "1. Be extremely direct, precise, and technical. Skip filler prose and pleasantries.\n"
+            "2. Always output clean, modular, production-grade code with optimal algorithms and clear comments.\n"
+            "3. SYSTEM CONTEXT: OS: {os_name} | Package Manager: {pkg_name} | Init System: {init_name}.\n"
+            "4. Terminal Font Rule: Use clean ASCII markup and standard markdown. No emojis.\n"
+            "5. ALWAYS respond in the EXACT SAME LANGUAGE as the user's message."
+        )
+    },
+    "anime-waifu": {
+        "name": "Anime Companion (Waifu)",
+        "desc": "Energetic, supportive, adorable anime companion (=^.^=)",
+        "prompt": (
+            "You are Larp-chan, a super energetic, cheerful, cute, and loving anime companion for {os_name}! (=^.^=)\n\n"
+            "PERSONALITY & BEHAVIOR:\n"
+            "1. Be adorable, cheerful, encouraging, and super enthusiastic! Call the user 'senpai' or 'friend'.\n"
+            "2. Use cute ASCII kaomojis (=^.^=), (>-<), \\(^o^)/, (^_~) in every reply.\n"
+            "3. SYSTEM CONTEXT: OS: {os_name} | Package Manager: {pkg_name}.\n"
+            "4. Provide great Linux help while maintaining your cute anime persona!\n"
+            "5. ALWAYS respond in the EXACT SAME LANGUAGE as the user's message."
+        )
+    },
+    "roast-master": {
+        "name": "Roast Master (Sarcastic Linux Elitist)",
+        "desc": "Witty, sarcastic Linux elitist with edgy humor (¬_¬)",
+        "prompt": (
+            "You are Larp AI, a witty, sarcastic, hyper-intelligent Linux power-user and sysadmin elitist for {os_name}.\n\n"
+            "PERSONALITY & BEHAVIOR:\n"
+            "1. Be witty, sarcastic, and funny, but ultimately helpful. Make lighthearted jokes about user mistakes or Windows.\n"
+            "2. Use ASCII kaomojis like (¬_¬), (-_-;), (x_x), (o_O).\n"
+            "3. SYSTEM CONTEXT: OS: {os_name} | Package Manager: {pkg_name}.\n"
+            "4. Provide 100% accurate Linux solutions while roasting gently.\n"
+            "5. ALWAYS respond in the EXACT SAME LANGUAGE as the user's message."
+        )
+    },
+    "translator": {
+        "name": "Multilingual Master & Translator",
+        "desc": "Linguistic expert for instant translations, nuances, and language practice",
+        "prompt": (
+            "You are Larp AI, a master multilingual translator and linguistic mentor.\n\n"
+            "PERSONALITY & BEHAVIOR:\n"
+            "1. Provide natural, idiomatic, high-precision translations with context nuances.\n"
+            "2. Highlight key vocabulary, idioms, and grammar tips when requested.\n"
+            "3. Keep output clean, structured, and easy to read in terminal fonts.\n"
+            "4. ALWAYS respond in the requested target language or match the user."
+        )
+    },
+    "minimalist": {
+        "name": "Ultra-Minimalist",
+        "desc": "1-2 sentence maximum replies — zero greetings, pure facts & code",
+        "prompt": (
+            "You are Larp AI, an ultra-concise minimalist terminal engine for {os_name}.\n\n"
+            "PERSONALITY & BEHAVIOR:\n"
+            "1. Answer in 1 or 2 sentences MAX. Zero greetings, zero fluff, zero kaomojis.\n"
+            "2. Provide only the essential command or direct answer.\n"
+            "3. SYSTEM CONTEXT: OS: {os_name} | Package Manager: {pkg_name}.\n"
+            "4. ALWAYS respond in the EXACT SAME LANGUAGE as the user's message."
+        )
+    }
+}
+
+
+def build_system_prompt(config: dict = None) -> str:
+    """Persona-tailored Linux AI system prompt."""
+    if config is None:
+        try:
+            config = load_config()
+        except Exception:
+            config = DEFAULT_CONFIG
+
     os_name = "Linux"
     if os.path.exists("/etc/os-release"):
         try:
@@ -567,16 +739,15 @@ def build_system_prompt() -> str:
     pkg_name, install_cmd, _, _ = detect_package_manager()
     init_name, service_cmd, _, _ = detect_init_system()
 
-    return (
-        f"You are Larp AI, a super cute, warm, friendly, and enthusiastic AI companion for {os_name}!" "\n\n"
-        r"PERSONALITY & BEHAVIOR:" "\n"
-        r"1. Be adorable, friendly, warm, and helpful (a true cute companion / няшка)! Never be a boring, stiff, or robotic 'dushnila'." "\n"
-        r"2. TERMINAL FONT & KAOMOJI RULE: NEVER use graphic emojis OR rare CJK Unicode symbols that result in broken boxes or missing characters in terminal fonts! ONLY use safe 100% standard ASCII kaomoji that render cleanly in any Linux console (such as (^_^), (^--^), (o_O), (x_x), (=^.^=), \(^o^)/, (>-<), (¬_¬), (-_-;))." "\n"
-        f"3. SYSTEM CONTEXT: OS: {os_name} | Package Manager: {pkg_name} | Init System: {init_name} (service command: '{service_cmd}')." "\n"
-        r"4. Do NOT mention any desktop environments, window managers, or personal user details unless the user explicitly asks about them." "\n"
-        f"5. Provide accurate, safe, and verified Linux commands tailored specifically for {os_name}, {pkg_name}, and {init_name}." "\n"
-        r"6. NEVER suggest Windows-specific tools or concepts (no sfc, chkdsk, bsod)." "\n"
-        r"7. ALWAYS respond in the EXACT SAME LANGUAGE as the user's message (e.g., reply in Russian if asked in Russian)."
+    preset_key = config.get("preset", "cyber-assistant").lower()
+    preset_data = BEHAVIOR_PRESETS.get(preset_key, BEHAVIOR_PRESETS["cyber-assistant"])
+    template = preset_data["prompt"]
+
+    return template.format(
+        os_name=os_name,
+        pkg_name=pkg_name,
+        init_name=init_name,
+        service_cmd=service_cmd
     )
 
 
@@ -912,6 +1083,7 @@ def load_config() -> dict:
                 deep_update(config, user_conf)
         except Exception:
             pass
+    apply_theme(config.get("theme", "cyberpunk"))
     return config
 
 
@@ -3431,6 +3603,80 @@ def offer_to_activate(config: dict, provider_id: str, label: str) -> None:
               f"or: larp config set provider {provider_id}{RESET}")
 
 
+def cmd_theme(args: list):
+    """Interactively select or switch color themes for LARP CLI."""
+    print_banner()
+    config = load_config()
+
+    if not args:
+        print(f"{BOLD}{PINK}Available Color Themes:{RESET}\n")
+        cur_t = config.get("theme", "cyberpunk").lower()
+        for idx, (t_id, t_info) in enumerate(THEMES.items(), 1):
+            tag = f"{GREEN}[Active]{RESET}" if t_id == cur_t else ""
+            sample = f"{t_info['PINK']}█{t_info['CYAN']}█{t_info['PURPLE']}█{t_info['GREEN']}█{t_info['YELLOW']}█{t_info['RED']}█{RESET}"
+            print(f"  {BOLD}{PINK}{idx}. {t_id:<14}{RESET} {sample}  {tag}")
+        print(f"\n{DIM}To select: larp theme <name> or pick [1-6]{RESET}\n")
+
+        try:
+            choice = input(f"{CYAN}Select theme [1-6]: {RESET}").strip().lower()
+        except (KeyboardInterrupt, EOFError):
+            return
+
+        t_keys = list(THEMES.keys())
+        if choice.isdigit() and 1 <= int(choice) <= len(t_keys):
+            target = t_keys[int(choice) - 1]
+        elif choice in THEMES:
+            target = choice
+        else:
+            return
+    else:
+        target = args[0].lower()
+
+    if target in THEMES:
+        config["theme"] = target
+        save_config(config)
+        apply_theme(target)
+        print(f"{GREEN}[+] Visual theme changed to: {BOLD}{target.upper()}{RESET}\n")
+    else:
+        print(f"{RED}[-] Unknown theme '{target}'. Available: {', '.join(THEMES.keys())}{RESET}\n")
+
+
+def cmd_preset(args: list):
+    """Interactively select or switch AI Behavior Presets."""
+    print_banner()
+    config = load_config()
+
+    if not args:
+        print(f"{BOLD}{PINK}Available AI Behavior Presets:{RESET}\n")
+        cur_p = config.get("preset", "cyber-assistant").lower()
+        p_keys = list(BEHAVIOR_PRESETS.keys())
+        for idx, (p_id, p_info) in enumerate(BEHAVIOR_PRESETS.items(), 1):
+            tag = f"{GREEN}[Active]{RESET}" if p_id == cur_p else ""
+            print(f"  {BOLD}{PINK}{idx}. {p_info['name']:<34}{RESET} {CYAN}─{RESET} {DIM}{p_info['desc']}{RESET} {tag}")
+        print(f"\n{DIM}To select: larp preset <name> or pick [1-6]{RESET}\n")
+
+        try:
+            choice = input(f"{CYAN}Select preset [1-6]: {RESET}").strip().lower()
+        except (KeyboardInterrupt, EOFError):
+            return
+
+        if choice.isdigit() and 1 <= int(choice) <= len(p_keys):
+            target = p_keys[int(choice) - 1]
+        elif choice in BEHAVIOR_PRESETS:
+            target = choice
+        else:
+            return
+    else:
+        target = args[0].lower()
+
+    if target in BEHAVIOR_PRESETS:
+        config["preset"] = target
+        save_config(config)
+        print(f"{GREEN}[+] AI Behavior preset set to: {BOLD}{BEHAVIOR_PRESETS[target]['name']}{RESET}\n")
+    else:
+        print(f"{RED}[-] Unknown preset '{target}'. Available: {', '.join(BEHAVIOR_PRESETS.keys())}{RESET}\n")
+
+
 def interactive_config_menu():
     """Categorized interactive TUI settings manager."""
     while True:
@@ -3442,13 +3688,16 @@ def interactive_config_menu():
         stt_info = _detect_stt_engine(config) or "Not set"
 
         conf_lines = [
-            f"  {CYAN}Active AI Engine:{RESET}     {BOLD}{PINK}{curr_p}{RESET}",
+            f"  {CYAN}Active AI Engine:{RESET}     {BOLD}{PINK}{curr_p}{RESET}  | Persona: {GREEN}{config.get('preset', 'cyber-assistant')}{RESET}",
+            f"  {CYAN}Visual Theme:{RESET}         {GREEN}{config.get('theme', 'cyberpunk').upper()}{RESET}",
             f"  {CYAN}Voice Assistant:{RESET}      {GREEN}{tts_engine.upper()}{RESET} [{tts_voice}]  | STT: {GREEN}{stt_info.split()[0]}{RESET}",
             f"  {CYAN}System Behavior:{RESET}      Web: {'ON' if config.get('web_search', True) else 'OFF'}  | Auto-Fix: {'ON' if config.get('auto_fix', False) else 'OFF'}\n",
             f"  {BOLD}{PINK}1.{RESET} [AI]     AI Providers & Models   (Gemini, Claude, OpenAI, Ollama, OpenRouter)",
-            f"  {BOLD}{PINK}2.{RESET} [Voice]  Voice Assistant Hub      (Select Voice, STT, VAD Auto-Stop, Rec Time)",
-            f"  {BOLD}{PINK}3.{RESET} [System] System & Fallback Chain  (Web Search, Auto-Fix Mode, Fallback Order)",
-            f"  {BOLD}{PINK}4.{RESET} [Reset]  Reset All Configuration to Defaults",
+            f"  {BOLD}{PINK}2.{RESET} [Theme]  Visual Color Theme      (Cyberpunk, Matrix, Dracula, Nord, Tokyo-Night, Catppuccin)",
+            f"  {BOLD}{PINK}3.{RESET} [Preset] AI Behavior Persona     (Cyber-Assistant, Coder, Anime-Waifu, Roast-Master, Minimalist)",
+            f"  {BOLD}{PINK}4.{RESET} [Voice]  Voice Assistant Hub      (Select Voice, STT, VAD Auto-Stop, Rec Time)",
+            f"  {BOLD}{PINK}5.{RESET} [System] System & Fallback Chain  (Web Search, Auto-Fix Mode, Fallback Order)",
+            f"  {BOLD}{PINK}6.{RESET} [Reset]  Reset All Configuration to Defaults",
             f"  {BOLD}{PINK}0.{RESET} [Exit]   Save & Exit Master Control"
         ]
 
@@ -3457,7 +3706,7 @@ def interactive_config_menu():
         print()
 
         try:
-            choice = input(f"{PINK}{BOLD}Select Category [0-4]: {RESET}").strip()
+            choice = input(f"{PINK}{BOLD}Select Category [0-6]: {RESET}").strip()
         except (KeyboardInterrupt, EOFError):
             print("\nExiting configuration.")
             break
@@ -3468,10 +3717,14 @@ def interactive_config_menu():
         elif choice == "1":
             _config_menu_providers(config)
         elif choice == "2":
-            _cmd_voice_setup()
+            cmd_theme([])
         elif choice == "3":
-            _config_menu_system(config)
+            cmd_preset([])
         elif choice == "4":
+            _cmd_voice_setup()
+        elif choice == "5":
+            _config_menu_system(config)
+        elif choice == "6":
             confirm = input(f"{RED}Reset ALL settings to default? [y/N]: {RESET}").strip().lower()
             if confirm in ["y", "yes"]:
                 save_config(json.loads(json.dumps(DEFAULT_CONFIG)))
@@ -3999,6 +4252,8 @@ def cmd_help():
     print(f"  {PINK}{BOLD}code{RESET} {CYAN}<task>{RESET}         {DIM}AI Code and script generator{RESET}")
     print(f"  {PINK}{BOLD}translate{RESET} {CYAN}<text>{RESET}      {DIM}Instant AI multilingual translator{RESET}")
     print(f"  {PINK}{BOLD}config{RESET}               {DIM}Interactive provider configuration TUI menu{RESET}")
+    print(f"  {PINK}{BOLD}theme{RESET} {CYAN}[name]{RESET}           {DIM}Change console color theme (cyberpunk/matrix/dracula/nord...){RESET}")
+    print(f"  {PINK}{BOLD}preset{RESET} {CYAN}[name]{RESET}          {DIM}Set AI behavior persona (coder/anime-waifu/roast-master...){RESET}")
     print(f"  {PINK}{BOLD}config models{RESET} {CYAN}[text]{RESET} {DIM}Browse OpenRouter model IDs (optionally filtered){RESET}")
     print(f"  {PINK}{BOLD}fallback{RESET}             {DIM}Manage the provider fallback chain (add / remove / clear){RESET}")
     print(f"  {PINK}{BOLD}proxy{RESET} {CYAN}[set|test|off]{RESET}   {DIM}Configure HTTP/HTTPS/SOCKS5 Proxy for blocked AI APIs{RESET}")
@@ -4299,6 +4554,10 @@ def main():
         cmd_restore(args)
     elif subcommand in ["alias", "setup-aliases"]:
         cmd_alias()
+    elif subcommand in ["theme", "colors"]:
+        cmd_theme(args)
+    elif subcommand in ["preset", "persona", "personality"]:
+        cmd_preset(args)
     elif subcommand == "config":
         cmd_config(args)
     elif subcommand in ["fallback", "chain"]:
