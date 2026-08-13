@@ -2053,11 +2053,49 @@ def service_command(action: str, service: str) -> list:
     return []
 
 
+def auto_install_ollama_package() -> bool:
+    """Auto-installs Ollama on any Linux distribution if missing."""
+    if shutil.which("ollama"):
+        return True
+
+    print(f"\n{BOLD}{PINK}[+] Ollama is not installed on this system. Auto-installing Ollama...{RESET}")
+
+    pkg_name, _, _, _ = detect_package_manager()
+    install_prefix = "sudo " if os.geteuid() != 0 else ""
+
+    pkg_commands = {
+        "pacman": f"{install_prefix}pacman -S --noconfirm ollama",
+        "apt": f"{install_prefix}apt update && {install_prefix}apt install -y ollama",
+        "dnf": f"{install_prefix}dnf install -y ollama",
+        "zypper": f"{install_prefix}zypper install -y ollama",
+        "xbps": f"{install_prefix}xbps-install -Sy ollama",
+        "apk": f"{install_prefix}apk add ollama",
+    }
+
+    if pkg_name in pkg_commands:
+        print(f"{CYAN}Installing Ollama package via {pkg_name}...{RESET}")
+        res = subprocess.run(pkg_commands[pkg_name], shell=True)
+        if res.returncode == 0 and shutil.which("ollama"):
+            print(f"{GREEN}[+] Ollama installed successfully via {pkg_name}!{RESET}\n")
+            return True
+
+    print(f"{CYAN}Installing Ollama via official installer (ollama.com)...{RESET}")
+    res = subprocess.run("curl -fsSL https://ollama.com/install.sh | sh", shell=True)
+    if shutil.which("ollama"):
+        print(f"{GREEN}[+] Ollama installed successfully!{RESET}\n")
+        return True
+
+    return False
+
+
 def start_ollama_daemon(ollama_url: str) -> bool:
     """Starts Ollama, preferring the user unit and falling back to `ollama serve`.
 
     Returns True once the daemon answers on `ollama_url`.
     """
+    if not shutil.which("ollama"):
+        auto_install_ollama_package()
+
     attempts = []
 
     # A user-level unit needs no password, so it is tried before the system one.
@@ -2127,14 +2165,15 @@ def ensure_ollama_and_get_model(config: dict) -> str:
 
     print(f"{PINK}Model '{target_model}' is not installed. Pulling it (ollama pull {target_model})...{RESET}")
     if not shutil.which("ollama"):
+        auto_install_ollama_package()
+
+    if not shutil.which("ollama"):
         raise ProviderError(
-            f"{RED}Model '{target_model}' is not installed and the ollama CLI was not found.{RESET}\n"
+            f"{RED}Model '{target_model}' is not installed and the ollama CLI could not be installed.{RESET}\n"
             f"{CYAN}Installed models: {', '.join(models) if models else 'none'}{RESET}")
 
     pull_res = subprocess.run(["ollama", "pull", target_model])
     if pull_res.returncode != 0:
-        # Only now settle for something else, and say so — silently answering
-        # with a different model than the configured one is a surprise.
         if models:
             substitute = models[0]
             print(f"{YELLOW}[!] Could not pull '{target_model}'. Using installed model "
