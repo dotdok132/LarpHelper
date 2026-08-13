@@ -97,6 +97,19 @@ larp voice setup               # Auto-install RHVoice, Piper or configure OpenAI
 larp voice test                # Full audio & speech recognition hardware diagnostic test
 ```
 
+### What a voice session may run on its own
+
+A spoken command is reconstructed from a speech transcript and a model's guess
+at what you meant, so `larp talk` does not hand arbitrary commands to the shell:
+
+- **Runs immediately** — launching a desktop application (`открой телеграм`,
+  `запусти браузер`). These open a window and change nothing about the system.
+- **Asks first** — anything else: `sudo`, package installs, file operations, or
+  a command using pipes, redirections or substitutions. The command is printed
+  in full and needs a `y` before it runs.
+- **Refused outright** — shutdown, reboot, and the destructive patterns
+  (`rm -rf /`, `mkfs`, raw writes to block devices).
+
 ### Supported Voice Engines (TTS)
 - **RHVoice (Elena / Aleksandr)**: High-quality natural offline Russian speech synthesizer (`sudo pacman -S rhvoice rhvoice-voice-elena` / `sudo xbps-install -Sy RHVoice`).
 - **OpenAI Neural Speech (`nova` / `shimmer` / `alloy`)**: Studio-quality human voice synthesis.

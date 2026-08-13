@@ -975,18 +975,23 @@ def resolve_voice_intent_command(user_speech: str, ai_response: str = "") -> str
     """Extracts or resolves runnable shell command from AI response or direct speech intent."""
     raw_cmd = extract_single_command(ai_response)
     if raw_cmd:
-        parts = raw_cmd.strip().split()
-        binary = parts[0]
-        resolved_bin = resolve_binary(binary)
-        if resolved_bin:
-            resolved_cmd = f"{resolved_bin} {' '.join(parts[1:])}".strip()
-            if not resolved_cmd.endswith("&") and not any(binary.lower().startswith(x) for x in ["sudo", "systemctl", "mkdir", "rm", "cp", "mv", "pkill"]):
-                resolved_cmd += " &"
-            return resolved_cmd
-        elif binary.lower() in ["telegram", "telegram-desktop", "ayugram"]:
-            t_bin = resolve_binary("Telegram") or resolve_binary("telegram-desktop")
-            if t_bin:
-                return f"{t_bin} &"
+        # Splitting on whitespace and re-joining with spaces dropped the quoting:
+        # `notify-send "build done"` came back as three bare arguments. shlex
+        # round-trips it, and a command it cannot parse is left untouched for
+        # classify_voice_command() to reject.
+        try:
+            parts = shlex.split(raw_cmd.strip())
+        except ValueError:
+            parts = []
+        if parts:
+            binary = parts[0]
+            resolved_bin = resolve_binary(binary)
+            if resolved_bin:
+                return shlex.join([resolved_bin] + parts[1:])
+            if binary.lower() in ["telegram", "telegram-desktop", "ayugram"]:
+                t_bin = resolve_binary("Telegram") or resolve_binary("telegram-desktop")
+                if t_bin:
+                    return shlex.quote(t_bin)
 
     speech_lower = user_speech.lower()
     for kw_tuple, candidates in APP_KEYWORDS.items():
@@ -994,37 +999,111 @@ def resolve_voice_intent_command(user_speech: str, ai_response: str = "") -> str
             for cand in candidates:
                 found = resolve_binary(cand)
                 if found:
-                    return f"{found} &"
+                    return shlex.quote(found)
 
     return raw_cmd
 
 
-def execute_voice_command(cmd: str) -> str:
-    """Executes a voice-requested shell command safely in the background or subshell."""
+POWER_COMMANDS = [
+    "shutdown", "poweroff", "reboot", "halt", "init 0", "init 6",
+    "systemctl poweroff", "systemctl reboot", "systemctl halt",
+]
+
+# Binaries `larp talk` may launch without stopping to ask. Every one is a
+# desktop application that opens a window and changes nothing about the system
+# on its own — which is the case hands-free voice control exists for ("открой
+# телеграм"). Anything outside this list still runs, but only after the user
+# says yes, because a spoken request is reconstructed from a transcript and an
+# AI guess and neither is reliable enough to hand the shell unattended.
+VOICE_AUTOLAUNCH = {
+    "telegram", "telegram-desktop", "ayugram-desktop",
+    "firefox", "chromium", "chrome", "google-chrome", "google-chrome-stable",
+    "zen-browser", "zen", "opera", "brave", "brave-browser",
+    "vesktop", "discord", "steam", "lutris",
+    "kitty", "alacritty", "foot", "konsole", "gnome-terminal", "wezterm",
+    "nautilus", "nemo", "thunar", "dolphin", "pcmanfm",
+    "code", "vscodium", "zed", "sublime_text",
+    "mpv", "vlc", "obs", "gimp", "inkscape", "krita", "spotify",
+}
+
+SHELL_OPERATOR_RE = re.compile(r'[;|`$><\n]|&&|\|\|')
+
+
+def classify_voice_command(cmd: str):
+    """Decides whether a voice-issued command may run unattended.
+
+    Returns (verdict, reason) where verdict is "blocked", "allow" or "confirm".
+    """
+    stripped = (cmd or "").strip()
+    while stripped.endswith("&"):
+        stripped = stripped[:-1].strip()
+    if not stripped:
+        return ("blocked", "empty command")
+
+    reason = find_destructive_pattern(cmd)
+    if reason:
+        return ("blocked", reason)
+
+    lowered = stripped.lower()
+    if any(pwr in lowered for pwr in POWER_COMMANDS):
+        return ("blocked", "system shutdown or reboot")
+
+    # Pipes, redirections and substitutions turn one launch into an arbitrary
+    # script, so they are never run unattended even for an allow-listed binary.
+    if SHELL_OPERATOR_RE.search(stripped):
+        return ("confirm", "it uses shell operators")
+
+    try:
+        argv = shlex.split(stripped)
+    except ValueError:
+        return ("blocked", "unbalanced quoting")
+    if not argv:
+        return ("blocked", "empty command")
+
+    binary = os.path.basename(argv[0]).lower()
+    if binary in ("sudo", "doas", "pkexec", "su"):
+        return ("confirm", "it asks for root")
+    if binary in VOICE_AUTOLAUNCH:
+        return ("allow", "")
+    return ("confirm", f"'{binary}' is not in the voice auto-launch list")
+
+
+def execute_voice_command(cmd: str, confirm=None) -> str:
+    """Runs a voice-requested command, asking first unless it is an app launch.
+
+    `confirm(cmd, reason) -> bool` is called for anything outside
+    VOICE_AUTOLAUNCH. It defaults to None, which declines: a caller that has no
+    way to ask the user must not execute on their behalf.
+    """
     if not cmd:
         return ""
 
-    if find_destructive_pattern(cmd):
-        return f"[Skipped dangerous/power command: {cmd}]"
+    verdict, reason = classify_voice_command(cmd)
 
-    cmd_lower = cmd.lower()
-    if any(pwr in cmd_lower for pwr in ["shutdown", "poweroff", "reboot", "halt", "init 0", "init 6", "systemctl poweroff", "systemctl reboot"]):
-        return f"[Blocked system shutdown/reboot command: {cmd}]"
+    if verdict == "blocked":
+        return f"[Blocked — {reason}]"
 
-    first_word = cmd.strip().split()[0].lower()
-    gui_apps = [
-        "telegram", "firefox", "google-chrome", "chrome", "chromium", "zen", "opera", "brave",
-        "kitty", "alacritty", "foot", "konsole", "gnome-terminal", "nemo", "thunar", "nautilus",
-        "dolphin", "code", "vscodium", "zed", "mpv", "vlc", "obs", "gimp", "inkscape", "discord", "steam"
-    ]
-    if any(app in first_word for app in gui_apps) and not cmd.strip().endswith("&"):
-        cmd = cmd.strip() + " &"
+    if verdict == "confirm":
+        if confirm is None or not confirm(cmd, reason):
+            return f"[Not executed — {reason}]"
+        try:
+            subprocess.Popen(cmd, shell=True, start_new_session=True,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return f"[Executed: {cmd}]"
+        except Exception as e:
+            return f"[Failed to execute {cmd}: {e}]"
 
+    # Allow-listed launch: no shell is involved, so nothing in the transcript can
+    # be reinterpreted as an operator. start_new_session detaches it already,
+    # which is what the old trailing "&" was for.
+    stripped = cmd.strip().rstrip("&").strip()
     try:
-        subprocess.Popen(cmd, shell=True, start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        return f"[Executed: {cmd}]"
+        argv = shlex.split(stripped)
+        subprocess.Popen(argv, start_new_session=True,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return f"[Executed: {stripped}]"
     except Exception as e:
-        return f"[Failed to execute {cmd}: {e}]"
+        return f"[Failed to execute {stripped}: {e}]"
 
 
 def setup_network_proxy(config: dict):
@@ -1950,6 +2029,32 @@ def is_exit_phrase(text: str) -> bool:
     return False
 
 
+def _confirm_in_hud(cmd: str, reason: str) -> bool:
+    """Asks before running a voice command that is not a plain app launch.
+
+    The HUD owns the whole screen, so it has to be torn down before a prompt is
+    readable — the same dance the loop already does when it falls back to typed
+    input.
+    """
+    global _HUD_FULL_SCREEN
+    was_full_screen = _HUD_FULL_SCREEN
+    _HUD_FULL_SCREEN = False
+    sys.stdout.write("\033[H\033[J")
+    sys.stdout.flush()
+    try:
+        print(f"\n{YELLOW}[!] Larp wants to run a command, but {reason}.{RESET}")
+        print(f"{DIM}    It was reconstructed from speech and an AI answer, so read it:{RESET}")
+        print(f"    {BOLD}{WHITE}{cmd}{RESET}\n")
+        try:
+            answer = input(f"{PINK}Run it? (y/N): {RESET}").strip().lower()
+        except (KeyboardInterrupt, EOFError):
+            print()
+            return False
+        return answer in ["y", "yes", "yeah", "д", "да"]
+    finally:
+        _HUD_FULL_SCREEN = was_full_screen
+
+
 def cmd_talk():
     """Continuous hands-free interactive voice loop with full-console TUI Studio HUD."""
     global _HUD_FULL_SCREEN, _HUD_LAST_USER, _HUD_LAST_AI
@@ -2030,7 +2135,7 @@ def cmd_talk():
             cmd_to_run = resolve_voice_intent_command(user_text, response)
             exec_info = ""
             if cmd_to_run:
-                exec_info = execute_voice_command(cmd_to_run)
+                exec_info = execute_voice_command(cmd_to_run, confirm=_confirm_in_hud)
 
             clean_ai_text = _clean_text_for_speech(response)
             _HUD_LAST_AI = (clean_ai_text or "Выполняю команду.") + (f"  {GREEN}{exec_info}{RESET}" if exec_info else "")
@@ -2045,6 +2150,19 @@ def cmd_talk():
         sys.stdout.write("\033[H\033[J")
         sys.stdout.flush()
         print(f"\n{CYAN}Exited voice session. Bye! (^_^){RESET}\n")
+
+
+def _confirm_at_prompt(cmd: str, reason: str) -> bool:
+    """Confirmation for the one-shot voice commands, which own no HUD."""
+    print(f"\n{YELLOW}[!] Larp wants to run a command, but {reason}.{RESET}")
+    print(f"{DIM}    It was reconstructed from speech and an AI answer, so read it:{RESET}")
+    print(f"    {BOLD}{WHITE}{cmd}{RESET}\n")
+    try:
+        answer = input(f"{PINK}Run it? (y/N): {RESET}").strip().lower()
+    except (KeyboardInterrupt, EOFError):
+        print()
+        return False
+    return answer in ["y", "yes", "yeah", "д", "да"]
 
 
 def cmd_listen(args: list):
@@ -2077,7 +2195,7 @@ def cmd_listen(args: list):
     cmd_to_run = resolve_voice_intent_command(text, response)
     exec_info = ""
     if cmd_to_run:
-        exec_info = execute_voice_command(cmd_to_run)
+        exec_info = execute_voice_command(cmd_to_run, confirm=_confirm_at_prompt)
 
     print_box("Larp AI Response", response + (f"\n\n{GREEN}{exec_info}{RESET}" if exec_info else ""), border_color=PINK)
     clean_ai_text = _clean_text_for_speech(response)
