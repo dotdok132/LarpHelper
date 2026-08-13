@@ -41,6 +41,44 @@ jobs:
       - name: Lint the installer scripts
         run: shellcheck install.sh uninstall.sh
 
+  install:
+    name: piped install (curl | bash)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # The README documents `curl -sSL ... | bash` as the primary install
+      # method. Piped, the script has no BASH_SOURCE and no local checkout, so
+      # it takes a different path through itself than `./install.sh` does — and
+      # `bash -n` and shellcheck both pass on a script that aborts there.
+      - name: Install from stdin
+        run: |
+          # Stands in for the download, so the copy under test is this one.
+          mkdir -p "${RUNNER_TEMP}/stub"
+          cat > "${RUNNER_TEMP}/stub/curl" <<STUB
+          #!/usr/bin/env bash
+          while [ \$# -gt 0 ]; do
+            if [ "\$1" = "-o" ]; then cp "${GITHUB_WORKSPACE}/bin/larp" "\$2"; exit 0; fi
+            shift
+          done
+          exit 1
+          STUB
+          chmod +x "${RUNNER_TEMP}/stub/curl"
+          PATH="${RUNNER_TEMP}/stub:${PATH}" PREFIX="${RUNNER_TEMP}/prefix" bash < install.sh
+
+      - name: The installed binary runs
+        run: |
+          "${RUNNER_TEMP}/prefix/bin/larp" version
+
+      - name: Install from a checkout
+        run: |
+          PREFIX="${RUNNER_TEMP}/prefix2" ./install.sh
+          "${RUNNER_TEMP}/prefix2/bin/larp" version
+
   smoke:
     name: cli smoke test
     runs-on: ubuntu-latest

@@ -10,7 +10,7 @@
 ```text
   ╭───╮    █░░ █▀█ █▀█ █▀█ █░░ ░▀█ █▄░█ █░█ █░█
   │   │    █▄▄ █▀█ █▀▄ █▀▀ █▄▄ █▄█ █░▀█ █▄█ ▄▀▄
-  ╰───╯   ─── LarpLinux OS Supreme AI Companion v4.1 ───
+  ╰───╯   ─── LarpLinux OS Supreme AI Companion v4.1.0 ───
 ```
 
 ---
@@ -59,9 +59,9 @@ chmod +x install.sh
 | `larp config models [text]` | Browse OpenRouter model IDs, optionally filtered |
 | `larp fallback` | Manage the provider fallback chain (add / remove / clear) |
 | `larp clean` | Disk cleanup wizard — package cache, logs & orphans (any package manager) |
-| `larp backup` | Snapshot & config backup manager (`~/.config/larp`, `niri`, `fwm`, `waybar`) |
+| `larp backup` | Snapshot & config backup manager (`~/.config/larp`, `niri`, `fwm`, `waybar`, `kitty`) |
 | `larp restore [archive]` | Restore configuration from a backup archive |
-| `larp alias` | Installs short terminal shortcuts (`l`, `ld`, `lw`, `lc`, `lg`, `lf`) into `~/.bashrc` |
+| `larp alias` | Installs short terminal shortcuts (`l`, `ld`, `lw`, `lc`, `lg`, `lf`) into your login shell's rc file (bash, zsh, ksh or fish) |
 | `larp bench` | Speedtest and latency benchmark for all AI providers |
 | `larp status` | Real-time system radar — CPU/RAM/Disk loads & active AI engine |
 | `larp monitor` | Interactive real-time system monitoring dashboard |

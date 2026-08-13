@@ -47,11 +47,21 @@ else
     echo -e "${YELLOW}[!] No sudo available — installing to ${INSTALL_DIR}.${RESET}"
 fi
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SOURCE_BIN="${SCRIPT_DIR}/bin/larp"
+# When the script is piped (`curl -sSL ... | bash`) there is no local checkout
+# and BASH_SOURCE is unset — which `set -u` turns into a fatal error, so this
+# has to be resolved defensively rather than inline.
+SCRIPT_DIR=""
+if [ -n "${BASH_SOURCE[0]:-}" ] && [ -f "${BASH_SOURCE[0]}" ]; then
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+fi
+
+SOURCE_BIN=""
+if [ -n "$SCRIPT_DIR" ] && [ -f "${SCRIPT_DIR}/bin/larp" ]; then
+    SOURCE_BIN="${SCRIPT_DIR}/bin/larp"
+fi
 TMP_DIR=""
 
-if [ ! -f "$SOURCE_BIN" ]; then
+if [ -z "$SOURCE_BIN" ]; then
     echo -e "${CYAN}[+] Downloading latest larp release...${RESET}"
     TMP_DIR=$(mktemp -d)
     trap 'rm -rf "$TMP_DIR"' EXIT
