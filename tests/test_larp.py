@@ -922,6 +922,90 @@ class TestVoiceExitPhrases(unittest.TestCase):
             self.assertFalse(larp.is_exit_phrase(said), f"{said!r} should NOT end the session")
 
 
+PNG_1PX = (b"\x89PNG\r\n\x1a\n" + b"\x00\x00\x00\rIHDR" + b"\x00" * 40)
+
+
+@unittest.skipUnless(hasattr(larp, "read_clipboard_image"), "Image input not present")
+class TestImageInput(unittest.TestCase):
+    def test_mime_is_taken_from_magic_bytes_not_the_extension(self):
+        # A JPEG saved as .png must be sent as image/jpeg or the API rejects it.
+        self.assertEqual(larp.guess_image_mime("shot.png", b"\xff\xd8\xff\xe0rest"), "image/jpeg")
+        self.assertEqual(larp.guess_image_mime("shot.jpg", PNG_1PX), "image/png")
+        self.assertEqual(larp.guess_image_mime("a.webp", b"RIFF____WEBPVP8 "), "image/webp")
+
+    def test_unknown_content_has_no_mime(self):
+        self.assertEqual(larp.guess_image_mime("notes.txt", b"hello there"), "")
+
+    def test_oversized_image_is_refused(self):
+        big = ("image/png", b"\x00" * (larp.MAX_IMAGE_BYTES + 1))
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertFalse(larp.check_image_size(big))
+            self.assertTrue(larp.check_image_size(("image/png", b"\x00" * 1024)))
+
+    def test_paste_flag_never_swallows_a_word_of_the_question(self):
+        # The bug this guards: --image with an optional value ate "what" in
+        # `larp why --image what is this error`.
+        self.assertEqual(larp.extract_image_flag(["--paste", "what", "is", "this"]),
+                         (True, "", ["what", "is", "this"]))
+
+    def test_file_flag_takes_exactly_one_path(self):
+        self.assertEqual(larp.extract_image_flag(["--image", "a.png", "why", "this"]),
+                         (True, "a.png", ["why", "this"]))
+
+    def test_file_flag_without_a_path_is_an_error_not_a_guess(self):
+        with contextlib.redirect_stdout(io.StringIO()):
+            requested, path, rest = larp.extract_image_flag(["--image"])
+        self.assertTrue(requested)
+        self.assertIsNone(path)
+
+    def test_no_flag_leaves_the_question_alone(self):
+        self.assertEqual(larp.extract_image_flag(["why", "this"]),
+                         (False, "", ["why", "this"]))
+
+    def test_no_clipboard_tool_means_no_image_rather_than_a_crash(self):
+        real_which = larp.shutil.which
+        larp.shutil.which = lambda name: None
+        try:
+            self.assertEqual(larp.clipboard_read_command(), [])
+            self.assertIsNone(larp.read_clipboard_image())
+        finally:
+            larp.shutil.which = real_which
+
+
+@unittest.skipUnless(hasattr(larp, "openai_style_content"), "Image payloads not present")
+class TestImagePayloadShapes(unittest.TestCase):
+    IMAGE = ("image/png", PNG_1PX)
+
+    def test_text_only_payloads_are_unchanged(self):
+        # Adding image support must not alter the wire format of a plain query.
+        self.assertEqual(larp.openai_style_content("q", None), "q")
+        self.assertEqual(larp.claude_content("q", None), "q")
+        self.assertEqual(larp.gemini_parts("q", None), [{"text": "q"}])
+
+    def test_openai_style_uses_a_data_uri(self):
+        content = larp.openai_style_content("q", self.IMAGE)
+        self.assertEqual(content[0], {"type": "text", "text": "q"})
+        self.assertTrue(content[1]["image_url"]["url"].startswith("data:image/png;base64,"))
+
+    def test_claude_puts_the_image_before_the_question(self):
+        content = larp.claude_content("q", self.IMAGE)
+        self.assertEqual(content[0]["type"], "image")
+        self.assertEqual(content[0]["source"]["media_type"], "image/png")
+        self.assertEqual(content[1], {"type": "text", "text": "q"})
+
+    def test_gemini_uses_inline_data(self):
+        parts = larp.gemini_parts("q", self.IMAGE)
+        self.assertEqual(parts[0]["inline_data"]["mime_type"], "image/png")
+        self.assertEqual(parts[1], {"text": "q"})
+
+    def test_every_provider_encodes_the_same_bytes(self):
+        expected = larp.base64.b64encode(PNG_1PX).decode("ascii")
+        self.assertEqual(larp.encode_image_base64(self.IMAGE), expected)
+        self.assertEqual(larp.claude_content("q", self.IMAGE)[0]["source"]["data"], expected)
+        self.assertEqual(larp.gemini_parts("q", self.IMAGE)[0]["inline_data"]["data"], expected)
+        self.assertIn(expected, larp.openai_style_content("q", self.IMAGE)[1]["image_url"]["url"])
+
+
 @unittest.skipUnless(hasattr(larp, "classify_voice_command"), "Voice classifier not present")
 class TestVoiceCommandClassification(unittest.TestCase):
     def test_app_launch_runs_unattended(self):

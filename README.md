@@ -57,6 +57,7 @@ chmod +x install.sh
 | `larp talk` | Full-Console 2D Studio TUI Voice Assistant session (hands-free mic & speaker) |
 | `larp listen [sec]` | Single voice query recorder and AI voice responder |
 | `larp speak <text>` | Synthesize and play text audio with real-time speech visualizer |
+| `larp see [question]` | Ask about a copied image or screenshot (`--image <file>` for a file) |
 | `larp voice` | Voice Assistant diagnostic dashboard & setup wizard |
 | `larp voice setup` | Multi-distro interactive Voice Engine installer (RHVoice, Piper, OpenAI) |
 | `larp voice test` | Interactive 4-step diagnostic test (mic, playback, STT, TTS) |
@@ -83,6 +84,29 @@ chmod +x install.sh
 | `larp get-create <task>` | AI Pack Architect with live Arch/AUR package validation |
 | `larp help` | Display complete command reference |
 | `larp version` | Print the installed larp version |
+
+---
+
+## 🖼️ Image Input
+
+Copy a screenshot and ask about it. No Python dependencies — the clipboard is
+read through `wl-paste` on Wayland or `xclip` on X11.
+
+```bash
+larp see                              # clipboard image, larp asks what you want to know
+larp see what is this error?          # clipboard image + question in one line
+larp see --image ~/shot.png explain   # a file instead of the clipboard
+larp why --paste why did this fail?   # attach a copied image to a web-search query
+```
+
+Inside `larp chat`, `/paste [question]` attaches whatever is on the clipboard to
+that one turn without leaving the session.
+
+PNG, JPEG, WebP and GIF are accepted, up to 5 MB. The format is identified by
+content rather than by file extension, so a mislabelled file is still sent
+correctly. Any provider with a vision-capable model works; on Ollama pick one
+(`llama3.2-vision`, `llava`, `qwen2.5vl`) or larp warns that the image will be
+ignored.
 
 ---
 
