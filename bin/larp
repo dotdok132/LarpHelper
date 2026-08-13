@@ -23,6 +23,7 @@ import threading
 import shutil
 import socket
 import tarfile
+import random
 
 __version__ = "4.1.0"
 
@@ -48,6 +49,10 @@ CUSTOM_RECIPES_FILE = os.path.join(CONFIG_DIR, "custom_recipes.json")
 HISTORY_FILE = os.path.join(CONFIG_DIR, "history.json")
 BACKUPS_DIR = os.path.join(CONFIG_DIR, "backups")
 
+TMP_AUDIO_INPUT = "/tmp/larp_input.wav"
+TMP_AUDIO_OUTPUT_MP3 = "/tmp/larp_output.mp3"
+TMP_AUDIO_OUTPUT_WAV = "/tmp/larp_output.wav"
+
 OLLAMA_URL = "http://localhost:11434"
 DEFAULT_MODEL = "mistral"
 
@@ -55,6 +60,13 @@ DEFAULT_CONFIG = {
     "provider": "ollama",
     "web_search": True,
     "auto_fix": False,
+    "voice": {
+        "enabled": True,
+        "language": "ru",
+        "tts_speed": 1.0,
+        "stt_engine": "auto",
+        "groq_api_key": ""
+    },
     "ollama": {
         "url": "http://localhost:11434",
         "model": "mistral",
@@ -163,7 +175,38 @@ class Spinner:
         if not self.thread:
             return
         self.running = False
-        self.thread.join()
+        if self.thread.is_alive():
+            self.thread.join()
+        self.thread = None
+
+
+class AudioVisualizer:
+    """Console TUI Oscilloscope audio visualizer banner."""
+    def __init__(self, title="Listening to microphone..."):
+        self.title = title
+        self.running = False
+        self.thread = None
+        self.bars = [" ", "░", "▒", "▓", "█", "▓", "▒", "░"]
+
+    def _visualize(self):
+        while self.running:
+            wave = "".join(random.choice(self.bars) for _ in range(16))
+            sys.stdout.write(f"\r{PINK}  🎙️ [{CYAN}{wave}{PINK}] {BOLD}{self.title}{RESET}")
+            sys.stdout.flush()
+            time.sleep(0.1)
+        sys.stdout.write(f"\r{' ' * (len(self.title) + 30)}\r")
+        sys.stdout.flush()
+
+    def start(self):
+        self.running = True
+        self.thread = threading.Thread(target=self._visualize)
+        self.thread.daemon = True
+        self.thread.start()
+
+    def stop(self):
+        self.running = False
+        if self.thread:
+            self.thread.join()
         self.thread = None
 
 
@@ -585,6 +628,218 @@ def save_history_entry(query: str, response: str, provider: str):
         write_private_json(HISTORY_FILE, history)
     except Exception:
         pass
+
+
+# =============================================================================
+# VOICE ENGINE (STT & NEURAL TTS)
+# =============================================================================
+
+def tts_synthesize_and_play(text: str, lang: str = "ru"):
+    """Synthesizes text into high-quality neural voice audio and plays it via standard Linux audio player."""
+    config = load_config()
+    if not config.get("voice", {}).get("enabled", True):
+        return
+
+    if not text:
+        return
+
+    clean_text = re.sub(r'\([^)]*\)', '', text)  # Strip kaomoji from spoken text
+    clean_text = re.sub(r'```.*?```', 'код скрипта', clean_text, flags=re.DOTALL)
+    clean_text = re.sub(r'`[^`]*`', '', clean_text)
+    clean_text = clean_text.strip()
+
+    if not clean_text:
+        return
+
+    chunks = [clean_text[i:i+180] for i in range(0, len(clean_text), 180)]
+
+    for chunk in chunks[:4]:
+        try:
+            url = f"https://translate.google.com/translate_tts?ie=UTF-8&client=tw-ob&tl={lang}&q={urllib.parse.quote(chunk)}"
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                data = resp.read()
+                with open(TMP_AUDIO_OUTPUT_MP3, "wb") as f:
+                    f.write(data)
+
+            if shutil.which("ffmpeg") and shutil.which("aplay"):
+                subprocess.run(f"ffmpeg -y -i {TMP_AUDIO_OUTPUT_MP3} {TMP_AUDIO_OUTPUT_WAV} 2>/dev/null && aplay -q {TMP_AUDIO_OUTPUT_WAV} 2>/dev/null", shell=True)
+            elif shutil.which("mpv"):
+                subprocess.run(f"mpv --no-terminal {TMP_AUDIO_OUTPUT_MP3} 2>/dev/null", shell=True)
+            elif shutil.which("paplay"):
+                subprocess.run(f"paplay {TMP_AUDIO_OUTPUT_MP3} 2>/dev/null", shell=True)
+            elif shutil.which("spd-say"):
+                subprocess.run(["spd-say", "-l", lang, chunk], check=False)
+        except Exception:
+            pass
+
+
+def record_user_speech(duration_sec: int = 4) -> str:
+    """Records microphone audio using arecord or pw-record."""
+    if not shutil.which("arecord") and not shutil.which("pw-record"):
+        print(f"{RED}[-] Error: Audio recording utility (arecord or pw-record) not found.{RESET}")
+        return ""
+
+    if os.path.exists(TMP_AUDIO_INPUT):
+        os.remove(TMP_AUDIO_INPUT)
+
+    viz = AudioVisualizer("Listening to microphone... Speak now!")
+    viz.start()
+
+    try:
+        if shutil.which("arecord"):
+            cmd = ["arecord", "-d", str(duration_sec), "-f", "S16_LE", "-r", "16000", "-c", "1", TMP_AUDIO_INPUT]
+            subprocess.run(cmd, capture_output=True, text=True, check=False)
+        elif shutil.which("pw-record"):
+            cmd = ["pw-record", "--duration", str(duration_sec), "--rate", "16000", TMP_AUDIO_INPUT]
+            subprocess.run(cmd, capture_output=True, text=True, check=False)
+    except Exception:
+        pass
+
+    viz.stop()
+    return TMP_AUDIO_INPUT if os.path.exists(TMP_AUDIO_INPUT) else ""
+
+
+def transcribe_audio_stt(audio_path: str) -> str:
+    """Transcribes audio file to text using Groq Whisper API, OpenAI Whisper API, or local whisper."""
+    if not audio_path or not os.path.exists(audio_path):
+        return ""
+
+    config = load_config()
+    voice_conf = config.get("voice", {})
+    groq_key = voice_conf.get("groq_api_key", "").strip() or config.get("openai", {}).get("api_key", "").strip()
+
+    if groq_key:
+        try:
+            boundary = "----WebKitFormBoundary7MA4YWxkTrZu0gW"
+            with open(audio_path, "rb") as f:
+                file_bytes = f.read()
+
+            body = bytearray()
+            body.extend(f"--{boundary}\r\n".encode())
+            body.extend(b'Content-Disposition: form-data; name="model"\r\n\r\nwhisper-1\r\n')
+            body.extend(f"--{boundary}\r\n".encode())
+            body.extend(b'Content-Disposition: form-data; name="file"; filename="audio.wav"\r\n')
+            body.extend(b'Content-Type: audio/wav\r\n\r\n')
+            body.extend(file_bytes)
+            body.extend(b'\r\n')
+            body.extend(f"--{boundary}--\r\n".encode())
+
+            endpoint = "https://api.openai.com/v1/audio/transcriptions"
+            if groq_key.startswith("gsk_"):
+                endpoint = "https://api.groq.com/openai/v1/audio/transcriptions"
+
+            req = urllib.request.Request(
+                endpoint,
+                data=bytes(body),
+                headers={
+                    "Authorization": f"Bearer {groq_key}",
+                    "Content-Type": f"multipart/form-data; boundary={boundary}"
+                },
+                method="POST"
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                res_data = json.loads(resp.read().decode("utf-8"))
+                return res_data.get("text", "").strip()
+        except Exception:
+            pass
+
+    if shutil.which("whisper"):
+        try:
+            res = subprocess.check_output(["whisper", audio_path, "--language", "Russian", "--model", "tiny"], text=True)
+            lines = [l.strip() for l in res.splitlines() if l.strip()]
+            return lines[-1] if lines else ""
+        except Exception:
+            pass
+
+    return ""
+
+
+# =============================================================================
+# VOICE COMMANDS (`larp talk`, `larp listen`, `larp speak`)
+# =============================================================================
+
+def cmd_talk():
+    """Continuous hands-free interactive voice loop."""
+    print_banner()
+    print_box("Larp AI Voice Assistant", f"{PINK}Hands-free Voice Session Active!{RESET}\n{CYAN}Speak into your microphone. Say 'exit' or press Ctrl+C to leave.{RESET}")
+    print()
+
+    config = load_config()
+
+    while True:
+        try:
+            print(f"\n{BOLD}{PINK}Listening...{RESET}")
+            audio_file = record_user_speech(duration_sec=4)
+            if not audio_file:
+                print(f"{YELLOW}[!] Microphone input failed.{RESET}")
+                break
+
+            print(f"{CYAN}Transcribing voice...{RESET}")
+            user_text = transcribe_audio_stt(audio_file)
+
+            if not user_text:
+                try:
+                    user_text = input(f"{PINK}{BOLD}Speech not captured. Type command (or Enter to listen again): {RESET}").strip()
+                except (KeyboardInterrupt, EOFError):
+                    break
+
+            if not user_text:
+                continue
+
+            print(f"\n{BOLD}{CYAN}You (Voice):{RESET} {user_text}")
+
+            if user_text.lower() in ["exit", "quit", "пока", "выход"]:
+                print(f"{CYAN}Goodbye!{RESET}")
+                tts_synthesize_and_play("До свидания! Хорошего дня!")
+                break
+
+            response = ask_ai(user_text)
+            p_name = config.get("provider", "ollama").upper()
+            print_box(f"Larp AI ({p_name})", response, border_color=PINK)
+
+            tts_synthesize_and_play(response, lang="ru")
+
+        except (KeyboardInterrupt, EOFError):
+            print(f"\n{CYAN}Exiting voice session.{RESET}")
+            break
+
+
+def cmd_listen(args: list):
+    """Record single voice query and respond."""
+    duration = 4
+    if args and args[0].isdigit():
+        duration = int(args[0])
+
+    print_banner()
+    print(f"{CYAN}Recording {duration}s voice query...{RESET}")
+    audio_file = record_user_speech(duration_sec=duration)
+    text = transcribe_audio_stt(audio_file)
+
+    if not text:
+        print(f"{YELLOW}[!] Could not transcribe speech.{RESET}")
+        return
+
+    print(f"{BOLD}{CYAN}Transcribed Query:{RESET} {text}\n")
+    response = ask_ai(text)
+    print_box("Larp AI Response", response, border_color=PINK)
+    tts_synthesize_and_play(response)
+
+
+def cmd_speak(args: list):
+    """Synthesize text into spoken voice."""
+    if not args:
+        print(f"{CYAN}Enter text to speak out loud:{RESET}")
+        try:
+            text = input(" > ").strip()
+        except (KeyboardInterrupt, EOFError):
+            return
+    else:
+        text = " ".join(args)
+
+    if text:
+        print(f"{PINK}Speaking text out loud...{RESET}")
+        tts_synthesize_and_play(text)
 
 
 def load_custom_recipes() -> dict:
@@ -2895,7 +3150,13 @@ def main():
     subcommand = sys.argv[1].lower()
     args = sys.argv[2:]
 
-    if subcommand in ["help", "-h", "--help"]:
+    if subcommand in ["talk", "voice", "chat-voice"]:
+        cmd_talk()
+    elif subcommand in ["listen", "rec", "record"]:
+        cmd_listen(args)
+    elif subcommand in ["speak", "say", "tts"]:
+        cmd_speak(args)
+    elif subcommand in ["help", "-h", "--help"]:
         cmd_help()
     elif subcommand in ["version", "--version", "-V"]:
         print(f"larp {__version__}")
