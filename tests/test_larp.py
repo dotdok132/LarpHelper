@@ -882,5 +882,20 @@ class TestOpenRouterConfig(unittest.TestCase):
             larp.OPENROUTER_URL = original
 
 
+@unittest.skipUnless(hasattr(larp, "_clean_text_for_speech"), "Voice engine not present in bin/larp")
+class TestVoiceEngine(unittest.TestCase):
+    def test_clean_text_for_speech_strips_kaomoji_and_markdown(self):
+        raw = "Привет! (^_^) вот ```python\nprint(1)\n``` код и `var` переменная."
+        cleaned = larp._clean_text_for_speech(raw)
+        self.assertNotIn("(^_^)", cleaned)
+        self.assertNotIn("```", cleaned)
+        self.assertIn("Привет!", cleaned)
+
+    def test_detect_stt_engine_with_groq_key(self):
+        cfg = {"voice": {"groq_api_key": "gsk_test123"}}
+        engine = larp._detect_stt_engine(cfg)
+        self.assertIn("Groq Whisper", engine)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
