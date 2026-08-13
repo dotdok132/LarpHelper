@@ -2055,6 +2055,38 @@ def _confirm_in_hud(cmd: str, reason: str) -> bool:
         _HUD_FULL_SCREEN = was_full_screen
 
 
+class HudAnimationLoop:
+    """Runs continuous animated HUD frames in a background thread during blocking tasks (STT, AI Thinking, TTS Synthesis)."""
+    def __init__(self, status_tag: str, title: str, user_text: str = "", ai_text: str = "", level: float = 0.0, speed: float = 0.06):
+        self.status_tag = status_tag
+        self.title = title
+        self.user_text = user_text
+        self.ai_text = ai_text
+        self.level = level
+        self.speed = speed
+        self.running = False
+        self.thread = None
+        self.step = 0
+
+    def _loop(self):
+        while self.running:
+            if _HUD_FULL_SCREEN:
+                _render_talk_hud(self.status_tag, self.title, self.user_text, self.ai_text, self.level, self.step)
+            time.sleep(self.speed)
+            self.step += 1
+
+    def __enter__(self):
+        self.running = True
+        self.thread = threading.Thread(target=self._loop, daemon=True)
+        self.thread.start()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.running = False
+        if self.thread and self.thread.is_alive():
+            self.thread.join(timeout=0.2)
+
+
 def cmd_talk():
     """Continuous hands-free interactive voice loop with full-console TUI Studio HUD."""
     global _HUD_FULL_SCREEN, _HUD_LAST_USER, _HUD_LAST_AI
@@ -2101,8 +2133,8 @@ def cmd_talk():
                     break
                 _HUD_FULL_SCREEN = True
             else:
-                _render_talk_hud("[STT]", "TRANSCRIBING SPEECH (Whisper)...", _HUD_LAST_USER, _HUD_LAST_AI)
-                user_text = transcribe_audio_stt(audio_file)
+                with HudAnimationLoop("[STT]", "TRANSCRIBING SPEECH (Whisper AI...)", _HUD_LAST_USER, _HUD_LAST_AI):
+                    user_text = transcribe_audio_stt(audio_file)
 
                 if not user_text:
                     _HUD_FULL_SCREEN = False
@@ -2122,7 +2154,6 @@ def cmd_talk():
                 tts_synthesize_and_play(_HUD_LAST_AI)
                 break
 
-            _render_talk_hud("[THINK]", "THINKING (Larp AI is generating response...)", _HUD_LAST_USER, _HUD_LAST_AI)
             voice_prompt = (
                 f"{user_text}\n\n"
                 "[Инструкция голосового ассистента:\n"
@@ -2130,7 +2161,9 @@ def cmd_talk():
                 "2. КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО вызывать shutdown, reboot, poweroff! Если пользователь просит завершить работу — просто попрощайся.\n"
                 "3. НЕ ИСПОЛЬЗУЙ эмодзи и смайлики!]"
             )
-            response = ask_ai(voice_prompt)
+
+            with HudAnimationLoop("[THINK]", "NEURAL AI THINKING (Larp AI Processing...)", _HUD_LAST_USER, _HUD_LAST_AI):
+                response = ask_ai(voice_prompt)
 
             cmd_to_run = resolve_voice_intent_command(user_text, response)
             exec_info = ""
@@ -2140,7 +2173,6 @@ def cmd_talk():
             clean_ai_text = _clean_text_for_speech(response)
             _HUD_LAST_AI = (clean_ai_text or "Выполняю команду.") + (f"  {GREEN}{exec_info}{RESET}" if exec_info else "")
 
-            _render_talk_hud("[SPEAK]", f"SPEAKING RESPONSE... {exec_info}", _HUD_LAST_USER, _HUD_LAST_AI)
             tts_synthesize_and_play(clean_ai_text or "Выполняю команду.", lang="ru")
 
     except (KeyboardInterrupt, EOFError):
