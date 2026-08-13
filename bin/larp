@@ -457,7 +457,9 @@ def looks_like_a_command(line: str) -> bool:
     not an executable, while `find / -name '*.log'` starts with one that is.
     """
     stripped = line.strip()
-    if not stripped or stripped.startswith("#"):
+    if not stripped or stripped.startswith("#") or stripped.startswith("[-]") or stripped.startswith("[+]"):
+        return False
+    if " — " in stripped or " -- " in stripped or "Connection refused" in stripped or "failed:" in stripped.lower():
         return False
 
     first = stripped.split()[0]
