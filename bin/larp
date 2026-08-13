@@ -762,8 +762,105 @@ BEHAVIOR_PRESETS = {
 }
 
 
+def get_active_window_context() -> str:
+    """Detects active focused window and open GUI applications across Hyprland, Niri, Sway, GNOME, X11."""
+    info = {"title": "Unknown", "app": "Unknown", "wm": "Unknown", "windows": []}
+
+    # 1. Hyprland (Wayland)
+    if shutil.which("hyprctl"):
+        try:
+            res = subprocess.run(["hyprctl", "activewindow", "-j"], capture_output=True, text=True, timeout=1)
+            if res.returncode == 0 and res.stdout.strip():
+                data = json.loads(res.stdout)
+                info["title"] = data.get("title", "") or data.get("initialTitle", "")
+                info["app"] = data.get("class", "") or data.get("initialClass", "")
+                info["wm"] = "Hyprland"
+            res_c = subprocess.run(["hyprctl", "clients", "-j"], capture_output=True, text=True, timeout=1)
+            if res_c.returncode == 0 and res_c.stdout.strip():
+                clients = json.loads(res_c.stdout)
+                for c in clients:
+                    title = c.get("title", "")
+                    app = c.get("class", "")
+                    if app or title:
+                        info["windows"].append(f"{app} ({title})")
+        except Exception:
+            pass
+
+    # 2. Niri (Wayland)
+    if info["app"] == "Unknown" and shutil.which("niri"):
+        try:
+            res = subprocess.run("niri msg --json windows", shell=True, capture_output=True, text=True, timeout=1)
+            if res.returncode == 0 and res.stdout.strip():
+                wins = json.loads(res.stdout)
+                for w in wins:
+                    title = w.get("title", "")
+                    app = w.get("app_id", "")
+                    if w.get("is_focused"):
+                        info["title"] = title
+                        info["app"] = app
+                        info["wm"] = "Niri"
+                    if app or title:
+                        info["windows"].append(f"{app} ({title})")
+        except Exception:
+            pass
+
+    # 3. Sway / i3 (Wayland / X11)
+    if info["app"] == "Unknown" and shutil.which("swaymsg"):
+        try:
+            res = subprocess.run(["swaymsg", "-t", "get_tree"], capture_output=True, text=True, timeout=1)
+            if res.returncode == 0:
+                data = json.loads(res.stdout)
+                def parse_nodes(node):
+                    if node.get("focused"):
+                        info["title"] = node.get("name", "")
+                        info["app"] = node.get("app_id") or node.get("window_properties", {}).get("class", "")
+                        info["wm"] = "Sway"
+                    if node.get("name") and node.get("node_type") == "con":
+                        info["windows"].append(f"{node.get('app_id', '')} ({node.get('name', '')})")
+                    for child in node.get("nodes", []) + node.get("floating_nodes", []):
+                        parse_nodes(child)
+                parse_nodes(data)
+        except Exception:
+            pass
+
+    # 4. X11 via xdotool
+    if info["app"] == "Unknown" and shutil.which("xdotool"):
+        try:
+            res_id = subprocess.run(["xdotool", "getactivewindow"], capture_output=True, text=True, timeout=1)
+            if res_id.returncode == 0 and res_id.stdout.strip():
+                win_id = res_id.stdout.strip()
+                res_title = subprocess.run(["xdotool", "getwindowname", win_id], capture_output=True, text=True, timeout=1)
+                info["title"] = res_title.stdout.strip()
+                res_class = subprocess.run(["xprop", "-id", win_id, "WM_CLASS"], capture_output=True, text=True, timeout=1)
+                if res_class.returncode == 0 and "=" in res_class.stdout:
+                    parts = res_class.stdout.split("=")[1].strip().split(",")
+                    info["app"] = parts[-1].strip().strip('"')
+                info["wm"] = "X11"
+        except Exception:
+            pass
+
+    if shutil.which("wmctrl") and not info["windows"]:
+        try:
+            res_w = subprocess.run(["wmctrl", "-l"], capture_output=True, text=True, timeout=1)
+            if res_w.returncode == 0 and res_w.stdout.strip():
+                for line in res_w.stdout.strip().splitlines():
+                    parts = line.split(maxsplit=3)
+                    if len(parts) >= 4:
+                        info["windows"].append(parts[3])
+        except Exception:
+            pass
+
+    focused_str = f"Focused Window: [{info['app']}] \"{info['title']}\"" if (info['app'] != 'Unknown' or info['title'] != 'Unknown') else "Focused Window: Unknown"
+    windows_str = f"Open Windows: {', '.join(info['windows'][:8])}" if info['windows'] else ""
+
+    ctx_parts = [focused_str]
+    if windows_str:
+        ctx_parts.append(windows_str)
+    return " | ".join(ctx_parts)
+
+
 def build_system_prompt(config: dict = None) -> str:
-    """Persona-tailored Linux AI system prompt."""
+    """Persona-tailored Linux AI system prompt with dynamic active window and process context."""
     if config is None:
         try:
             config = load_config()
@@ -783,17 +880,23 @@ def build_system_prompt(config: dict = None) -> str:
 
     pkg_name, install_cmd, _, _ = detect_package_manager()
     init_name, service_cmd, _, _ = detect_init_system()
+    window_ctx = get_active_window_context()
 
     preset_key = config.get("preset", "cyber-assistant").lower()
     preset_data = BEHAVIOR_PRESETS.get(preset_key, BEHAVIOR_PRESETS["cyber-assistant"])
     template = preset_data["prompt"]
 
-    return template.format(
+    prompt_str = template.format(
         os_name=os_name,
         pkg_name=pkg_name,
         init_name=init_name,
         service_cmd=service_cmd
     )
+
+    if window_ctx:
+        prompt_str += f"\n\nCURRENT DESKTOP CONTEXT (Active Window & Open Apps):\n{window_ctx}"
+
+    return prompt_str
 
 
 DESTRUCTIVE_PATTERNS = [
