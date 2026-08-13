@@ -896,6 +896,74 @@ class TestVoiceEngine(unittest.TestCase):
         engine = larp._detect_stt_engine(cfg)
         self.assertIn("Groq Whisper", engine)
 
+    def test_clean_text_for_speech_keeps_real_parentheses(self):
+        raw = "Ставь пакет ffmpeg (он нужен для конвертации) и всё заработает."
+        cleaned = larp._clean_text_for_speech(raw)
+        self.assertIn("он нужен для конвертации", cleaned)
+
+    def test_clean_text_for_speech_strips_kaomoji_variants(self):
+        for face in ["(^_^)", "(o_O)", "(=^.^=)", "(>-<)", "(-_-;)", "(x_x)"]:
+            cleaned = larp._clean_text_for_speech(f"Готово! {face} дальше?")
+            self.assertNotIn(face, cleaned, f"{face} should be stripped")
+
+
+@unittest.skipUnless(hasattr(larp, "is_exit_phrase"), "Voice exit matcher not present")
+class TestVoiceExitPhrases(unittest.TestCase):
+    def test_deliberate_farewell_ends_the_session(self):
+        for said in ["пока", "Пока!", "выход", "стоп", "exit", "до свидания",
+                     "ну пока", "хватит", "заверши работу"]:
+            self.assertTrue(larp.is_exit_phrase(said), f"{said!r} should end the session")
+
+    def test_ordinary_request_containing_an_exit_word_does_not(self):
+        # "покажи" contains "пока"; "выход в интернет" contains "выход".
+        for said in ["покажи мне файлы", "пока что не надо", "стоп-кран сломан",
+                     "какой у меня выход в интернет", "exiting the app",
+                     "открой telegram"]:
+            self.assertFalse(larp.is_exit_phrase(said), f"{said!r} should NOT end the session")
+
+
+@unittest.skipUnless(hasattr(larp, "summarize_provider_error"), "Error summariser not present")
+class TestProviderErrorSummary(unittest.TestCase):
+    def test_openrouter_json_blob_is_condensed_to_the_upstream_reason(self):
+        raw = ('OpenRouter Error (429): {"error":{"message":"Provider returned error",'
+               '"code":429,"metadata":{"raw":"google/gemma-4-26b:free is temporarily '
+               'rate-limited upstream. Please retry shortly, or add your own key to '
+               'accumulate your rate limits: https://openrouter.ai/settings/integrations",'
+               '"provider_name":"Google AI Studio","is_byok":false}}}')
+        summary = larp.summarize_provider_error(raw)
+        self.assertIn("rate-limited upstream", summary)
+        self.assertNotIn("is_byok", summary)
+        self.assertLess(len(summary), 120)
+
+    def test_plain_error_is_left_alone(self):
+        raw = "Ollama Connection Error: <urlopen error [Errno 111] Connection refused>"
+        self.assertEqual(larp.summarize_provider_error(raw), raw)
+
+    def test_empty_error_has_a_fallback(self):
+        self.assertEqual(larp.summarize_provider_error("   "), "unknown error")
+
+
+@unittest.skipUnless(HAS_STREAMING, "StreamPrinter not present in bin/larp")
+class TestPartialStreamDiscard(unittest.TestCase):
+    def test_partial_answer_is_dropped_and_not_merged_into_the_fallback(self):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            printer = larp.StreamPrinter("Title")
+            printer.write("half an answer from the first ")
+            printer.discard_partial("openrouter/foo")
+            printer.write("the real answer")
+            result = printer.finish()
+        self.assertEqual(result, "the real answer")
+        self.assertNotIn("half an answer", result)
+
+    def test_theme_change_is_reflected_in_new_boxes(self):
+        larp.apply_theme("matrix")
+        try:
+            printer = larp.StreamPrinter("Title")
+            self.assertEqual(printer.border_color, larp.THEMES["matrix"]["PINK"])
+        finally:
+            larp.apply_theme("cyberpunk")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

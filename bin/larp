@@ -26,6 +26,7 @@ import tarfile
 import random
 import math
 import shlex
+import tempfile
 
 __version__ = "4.1.0"
 
@@ -135,9 +136,25 @@ CUSTOM_RECIPES_FILE = os.path.join(CONFIG_DIR, "custom_recipes.json")
 HISTORY_FILE = os.path.join(CONFIG_DIR, "history.json")
 BACKUPS_DIR = os.path.join(CONFIG_DIR, "backups")
 
-TMP_AUDIO_INPUT = "/tmp/larp_input.wav"
-TMP_AUDIO_OUTPUT_MP3 = "/tmp/larp_output.mp3"
-TMP_AUDIO_OUTPUT_WAV = "/tmp/larp_output.wav"
+# Audio scratch files live in an owner-only per-user directory rather than at a
+# fixed /tmp path. /tmp is world-writable, so "/tmp/larp_output.wav" could be
+# pre-created as a symlink by any other account on the machine and turned into a
+# write primitive — and two users running larp would overwrite each other.
+AUDIO_TMP_DIR = os.path.join(
+    os.environ.get("XDG_RUNTIME_DIR") or tempfile.gettempdir(),
+    f"larp-{os.getuid()}",
+)
+TMP_AUDIO_INPUT = os.path.join(AUDIO_TMP_DIR, "input.wav")
+TMP_AUDIO_OUTPUT_MP3 = os.path.join(AUDIO_TMP_DIR, "output.mp3")
+TMP_AUDIO_OUTPUT_WAV = os.path.join(AUDIO_TMP_DIR, "output.wav")
+
+
+def ensure_audio_tmp_dir() -> str:
+    """Creates the private audio scratch directory, refusing to follow a symlink."""
+    os.makedirs(AUDIO_TMP_DIR, mode=0o700, exist_ok=True)
+    if not os.path.islink(AUDIO_TMP_DIR) and os.path.isdir(AUDIO_TMP_DIR):
+        os.chmod(AUDIO_TMP_DIR, 0o700)
+    return AUDIO_TMP_DIR
 
 OLLAMA_URL = "http://localhost:11434"
 DEFAULT_MODEL = "mistral"
@@ -284,8 +301,10 @@ def _render_talk_hud(status_tag: str, title: str, user_text: str = "", ai_text: 
     cols = max(60, cols)
     rows = max(16, rows)
 
-    header = " LARP LINUX — UNIVERSAL AI VOICE COMPANION v4.1.0 "
-    header_line = f"┌─{header}─{'─' * max(0, cols - len(header) - 5)}┐"
+    # "┌" + "─" + header + "─" + filler + "┐" is 4 cells besides the header, so
+    # subtracting 5 made the top border one column narrower than every other row.
+    header = f" LARP LINUX — UNIVERSAL AI VOICE COMPANION v{__version__} "
+    header_line = f"┌─{header}─{'─' * max(0, cols - len(header) - 4)}┐"
 
     kaomojis = ["(^_^) ", "(^O^) ", "(^_-) ", "(^o^) ", "(^_~) "]
     listening_faces = ["(o_o)", "(•_•)", "(O_O)", "(^o^)", "(^_^)"]
@@ -354,38 +373,39 @@ def _render_talk_hud(status_tag: str, title: str, user_text: str = "", ai_text: 
             else:
                 row_str.append(" ")
 
-        line_plain = "".join(row_str)
-
-        # Center Kaomoji Core Overlay
+        # Center Kaomoji Core Overlay.
+        #
+        # row_str holds one entry per column, each already wrapped in colour
+        # escapes. Splicing the overlay by raw string index used to cut through
+        # those escapes and drop a variable number of columns, which made the row
+        # a different visible width than the box and broke the right border.
+        # Replacing whole cells keeps the column count exact.
         if y == int(cy):
-            center_text = f"{CYAN}{BOLD} Larp: {face} {RESET}"
-            plain_len = 0
-            insert_pos = 0
-            target_plain_pos = int(cx) - 6
+            overlay = f" Larp: {face} "
+            start = max(0, min(int(cx) - len(overlay) // 2, len(row_str) - len(overlay)))
+            for offset, char in enumerate(overlay):
+                if start + offset < len(row_str):
+                    row_str[start + offset] = f"{CYAN}{BOLD}{char}{RESET}"
 
-            idx = 0
-            while idx < len(line_plain):
-                if line_plain[idx:idx + 2] == "\033[":
-                    end_ansi = line_plain.find("m", idx)
-                    if end_ansi != -1:
-                        idx = end_ansi + 1
-                        continue
-                plain_len += 1
-                if plain_len == target_plain_pos:
-                    insert_pos = idx
-                idx += 1
-
-            line_plain = line_plain[:insert_pos] + center_text + line_plain[insert_pos + 14:]
+        line_plain = "".join(row_str)
 
         buffer.append(f"{PINK}│{RESET} {line_plain} {PINK}│{RESET}")
 
-    # Conversation Footer Box
-    buffer.append(f"{PINK}├{'─' * (cols - 2)}┤{RESET}")
-    u_disp = (user_text[:cols - 16] + "...") if len(user_text) > cols - 16 else (user_text or "(listening...)")
-    ai_disp = (ai_text[:cols - 16] + "...") if len(ai_text) > cols - 16 else (ai_text or "(waiting for query...)")
+    # Conversation Footer Box.
+    #
+    # The AI line can carry colour escapes (the execution report is coloured),
+    # and str.ljust counts those as columns. Stripping them first is what keeps
+    # the right border aligned instead of drifting left by the escape length.
+    def _footer(label: str, text: str, placeholder: str) -> str:
+        body = plain_text(text).strip() or placeholder
+        limit = cols - 11
+        if len(body) > limit:
+            body = body[:limit] + "..."
+        return f" {label} {body}"
 
-    u_line = f" You:  {u_disp}"
-    ai_line = f" Larp: {ai_disp}"
+    buffer.append(f"{PINK}├{'─' * (cols - 2)}┤{RESET}")
+    u_line = _footer("You: ", user_text, "(listening...)")
+    ai_line = _footer("Larp:", ai_text, "(waiting for query...)")
 
     buffer.append(f"{PINK}│{RESET} {CYAN}{BOLD}{u_line:<{cols-4}}{RESET} {PINK}│{RESET}")
     buffer.append(f"{PINK}│{RESET} {PINK}{BOLD}{ai_line:<{cols-4}}{RESET} {PINK}│{RESET}")
@@ -467,9 +487,11 @@ class StreamPrinter:
     that do not respect word or line boundaries.
     """
 
-    def __init__(self, title: str, border_color: str = PINK):
+    def __init__(self, title: str, border_color: str = None):
         self.title = title
-        self.border_color = border_color
+        # Resolved at call time, not at import: apply_theme() rebinds PINK, and a
+        # default argument would freeze the palette the module was loaded with.
+        self.border_color = border_color or PINK
         self.width = box_width()
         self.column = 0
         self.pending = ""
@@ -526,6 +548,28 @@ class StreamPrinter:
             elif self.column > 0 or self.after_hard_newline:
                 sys.stdout.write(" ")
                 self.column += 1
+        sys.stdout.flush()
+
+    def discard_partial(self, label: str):
+        """Drops text a provider streamed before it failed mid-answer.
+
+        A provider can emit tokens and only then hit an error (Claude and
+        OpenRouter both signal failures as an event inside the stream). Without
+        this the abandoned fragment stayed in the box and the fallback's answer
+        was appended straight onto it, producing one merged reply built from two
+        different models.
+        """
+        if not self.started:
+            self.chunks = []
+            self.pending = ""
+            return
+        if self.pending:
+            self._emit_word(self.pending)
+            self.pending = ""
+        self.chunks = []
+        sys.stdout.write(f"\n{self.border_color}│{RESET} {DIM}[{label} failed mid-answer — "
+                         f"discarding the partial reply above]{RESET}")
+        self._newline()
         sys.stdout.flush()
 
     def finish(self) -> str:
@@ -587,7 +631,8 @@ def wrap_to_width(text: str, width: int) -> list:
     return wrapped
 
 
-def print_box(title: str, text: str, border_color: str = PINK):
+def print_box(title: str, text: str, border_color: str = None):
+    border_color = border_color or PINK
     term_width = box_width()
     inner_width = term_width - 2
 
@@ -992,6 +1037,16 @@ def setup_network_proxy(config: dict):
     if "://" not in proxy_url:
         proxy_url = "http://" + proxy_url
 
+    # urllib's ProxyHandler speaks HTTP CONNECT only — it has no SOCKS support,
+    # and handed a socks5:// URL it silently makes a direct connection. Saying so
+    # is better than looking configured while the proxy is not used at all.
+    if proxy_url.lower().startswith(("socks", "socks5h")):
+        print(f"{YELLOW}[!] SOCKS proxies are not supported by larp's HTTP client — "
+              f"'{proxy_url}' would be ignored.{RESET}")
+        print(f"{CYAN}    Point larp at your client's HTTP inbound instead "
+              f"(Clash/V2Ray/sing-box all expose one), e.g. http://127.0.0.1:7890.{RESET}")
+        return
+
     os.environ["HTTP_PROXY"] = proxy_url
     os.environ["HTTPS_PROXY"] = proxy_url
     os.environ["http_proxy"] = proxy_url
@@ -1037,7 +1092,12 @@ def cmd_proxy(args: list):
         print(f"{GREEN}[+] Proxy disabled successfully.{RESET}\n")
         return
 
-    if args[0] == "set" and len(args) > 1:
+    if args[0] == "set":
+        if len(args) < 2 or not args[1].strip():
+            # Falling through printed nothing at all, which read as success.
+            print(f"{YELLOW}[!] Usage: larp proxy set <url>{RESET}")
+            print(f"{DIM}    Example: larp proxy set http://127.0.0.1:7890{RESET}\n")
+            return
         proxy_val = args[1].strip()
         config["proxy"] = proxy_val
         save_config(config)
@@ -1133,11 +1193,29 @@ def save_history_entry(query: str, response: str, provider: str):
 # VOICE ENGINE (STT & NEURAL TTS)
 # =============================================================================
 
+def _is_kaomoji(body: str) -> bool:
+    """True for the contents of a kaomoji's brackets, false for ordinary prose.
+
+    A kaomoji is short, has no spaces, and is built from punctuation with at most
+    isolated letters for eyes — "^_^", "o_O", "=^.^=". Real parenthetical text
+    such as "(он нужен для конвертации)" or "(offline)" has spaces or runs of
+    letters, so it survives.
+    """
+    if not body or len(body) > 8 or any(c.isspace() for c in body):
+        return False
+    if not any(c in "^~=;><-_.*" for c in body):
+        return False
+    return not re.search(r'[^\W\d_]{3,}', body)
+
+
 def _clean_text_for_speech(text: str) -> str:
     """Strips kaomoji, code blocks, URLs, markdown, and limits text length for natural speech synthesis."""
     if not text:
         return ""
-    clean = re.sub(r'\([^)]*\)', '', text)  # Strip kaomoji
+    # Only kaomoji are dropped. Stripping every parenthesised group also removed
+    # real content — "install ffmpeg (needed for conversion)" was spoken as
+    # "install ffmpeg", losing the explanation.
+    clean = re.sub(r'\(([^()]*)\)', lambda m: "" if _is_kaomoji(m.group(1)) else m.group(0), text)
     clean = re.sub(r'```.*?```', '', clean, flags=re.DOTALL)
     clean = re.sub(r'`[^`]*`', '', clean)
     clean = re.sub(r'https?://\S+', '', clean)
@@ -1247,6 +1325,7 @@ def tts_synthesize_and_play(text: str, lang: str = "ru"):
     if not clean_text:
         return
 
+    ensure_audio_tmp_dir()
     lang = vc.get("language", lang)
     engine = vc.get("tts_engine", "auto")
 
@@ -1286,7 +1365,11 @@ def tts_synthesize_and_play(text: str, lang: str = "ru"):
 
     # 3. Google Neural TTS with ffmpeg mastering filter
     if engine in ["auto", "google"]:
+        # Google's endpoint caps a request at roughly 200 characters, so a long
+        # answer is split. Every chunk has to be played: returning after the
+        # first one silently truncated everything past ~180 characters.
         chunks = [clean_text[i:i+180] for i in range(0, len(clean_text), 180)]
+        spoke_any = False
         for chunk in chunks[:4]:
             try:
                 url = f"https://translate.google.com/translate_tts?ie=UTF-8&client=tw-ob&tl={lang}&q={urllib.parse.quote(chunk)}"
@@ -1298,13 +1381,16 @@ def tts_synthesize_and_play(text: str, lang: str = "ru"):
 
                 if shutil.which("ffmpeg"):
                     filter_chain = "atempo=1.04,highpass=f=80,lowpass=f=8000,volume=1.25"
-                    subprocess.run(f"ffmpeg -y -i {TMP_AUDIO_OUTPUT_MP3} -af \"{filter_chain}\" {TMP_AUDIO_OUTPUT_WAV} 2>/dev/null", shell=True)
+                    subprocess.run(f"ffmpeg -y -i {shlex.quote(TMP_AUDIO_OUTPUT_MP3)} -af \"{filter_chain}\" "
+                                   f"{shlex.quote(TMP_AUDIO_OUTPUT_WAV)} 2>/dev/null", shell=True)
                     _play_audio_with_speaking_animation(TMP_AUDIO_OUTPUT_WAV)
                 else:
                     _play_audio_with_speaking_animation(TMP_AUDIO_OUTPUT_MP3)
-                return
+                spoke_any = True
             except Exception:
                 pass
+        if spoke_any:
+            return
 
     # 4. espeak / spd-say offline fallbacks
     if shutil.which("spd-say"):
@@ -1380,6 +1466,8 @@ def record_user_speech(duration_sec: int = None, auto_stop: bool = None) -> str:
     if not recorder:
         print(f"{RED}[-] Error: No audio recorder found (install pipewire, ffmpeg, or alsa-utils){RESET}")
         return ""
+
+    ensure_audio_tmp_dir()
 
     if os.path.exists(TMP_AUDIO_INPUT):
         try:
@@ -1547,12 +1635,13 @@ def transcribe_audio_stt(audio_path: str) -> str:
     # --- 4. Local whisper CLI ---
     if shutil.which("whisper"):
         try:
+            out_dir = ensure_audio_tmp_dir()
             result = subprocess.run(
                 ["whisper", audio_path, "--model", whisper_model,
-                 "--output_format", "txt", "--output_dir", "/tmp", "--fp16", "False"],
+                 "--output_format", "txt", "--output_dir", out_dir, "--fp16", "False"],
                 capture_output=True, text=True, timeout=60
             )
-            txt_file = os.path.join("/tmp", os.path.splitext(os.path.basename(audio_path))[0] + ".txt")
+            txt_file = os.path.join(out_dir, os.path.splitext(os.path.basename(audio_path))[0] + ".txt")
             if os.path.exists(txt_file):
                 with open(txt_file, "r", encoding="utf-8") as f:
                     text = f.read().strip()
@@ -1614,7 +1703,9 @@ def _whisper_api_request(audio_path: str, api_key: str, endpoint: str, model: st
         )
         with urllib.request.urlopen(req, timeout=15) as resp:
             data = json.loads(resp.read().decode("utf-8"))
-            return data.get("text", "").strip()
+            # An empty transcript is a failure, not an answer: returning "" here
+            # counted as success and skipped every local STT fallback.
+            return data.get("text", "").strip() or None
     except urllib.error.HTTPError as e:
         if e.code in (401, 403):
             pass
@@ -1834,6 +1925,31 @@ def _setup_voice_engine_installer(config: dict):
         print(f"{GREEN}[+] Voice set to Google Neural TTS.{RESET}")
 
 
+EXIT_PHRASES = [
+    "exit", "quit", "пока", "выход", "стоп", "хватит", "отмена",
+    "заверши работу", "заверши свою работу", "завершить работу",
+    "выключи ассистента", "выключи голосовой", "закройся", "до свидания",
+]
+
+
+def is_exit_phrase(text: str) -> bool:
+    """True when the whole utterance is a request to end the voice session.
+
+    Substring matching ended the session on ordinary requests: "покажи файлы"
+    contains "пока", "какой у меня выход в интернет" contains "выход". A phrase
+    now has to match on word boundaries *and* be the bulk of what was said, so
+    only a deliberate "пока" stops the loop.
+    """
+    spoken = plain_text(text).strip().lower().strip(" .!?,")
+    if not spoken:
+        return False
+    for phrase in EXIT_PHRASES:
+        if re.fullmatch(rf'(ну\s+|ладно\s+|ок\s+|okay\s+|all\s+right\s+)?{re.escape(phrase)}'
+                        rf'(\s+larp|\s+ларп|\s+ассистент)?', spoken):
+            return True
+    return False
+
+
 def cmd_talk():
     """Continuous hands-free interactive voice loop with full-console TUI Studio HUD."""
     global _HUD_FULL_SCREEN, _HUD_LAST_USER, _HUD_LAST_AI
@@ -1895,13 +2011,7 @@ def cmd_talk():
                     _HUD_FULL_SCREEN = True
 
             _HUD_LAST_USER = user_text
-            u_lower = user_text.lower()
-            exit_phrases = [
-                "exit", "quit", "пока", "выход", "стоп", "хватит", "отмена",
-                "заверши работу", "заверши свою работу", "завершить работу",
-                "выключи ассистента", "выключи голосовой", "закройся", "до свидания"
-            ]
-            if any(phrase in u_lower for phrase in exit_phrases):
+            if is_exit_phrase(user_text):
                 _HUD_LAST_AI = "До свидания! Хорошего дня!"
                 _render_talk_hud("[SPEAK]", "GOODBYE!", _HUD_LAST_USER, _HUD_LAST_AI)
                 tts_synthesize_and_play(_HUD_LAST_AI)
@@ -2925,15 +3035,66 @@ def build_attempt_chain(config: dict) -> list:
     return attempts
 
 
-def ask_ai(prompt: str, extra_web_context: str = "", on_chunk=None) -> str:
+def summarize_provider_error(message: str) -> str:
+    """Condenses a provider failure into one readable line.
+
+    Providers embed the raw upstream body in the error, and OpenRouter's is a
+    single line of JSON several hundred characters long. Taking "the first line"
+    therefore printed the whole blob, so a chain of four failures filled the
+    screen with metadata instead of saying what went wrong. The useful part is
+    the nested "message" field.
+    """
+    text = plain_text(message).strip()
+    if not text:
+        return "unknown error"
+
+    head = text.splitlines()[0]
+
+    code = ""
+    code_match = re.match(r'^(.*?Error)\s*\((\d{3})\)\s*:', head)
+    if code_match:
+        code = code_match.group(2)
+
+    detail = ""
+    json_match = re.search(r'[{\[].*[}\]]', head, re.DOTALL)
+    if json_match:
+        try:
+            payload = json.loads(json_match.group(0))
+            node = payload.get("error", payload) if isinstance(payload, dict) else {}
+            if isinstance(node, dict):
+                # metadata.raw carries the upstream provider's own words
+                # ("temporarily rate-limited upstream"); "message" is often the
+                # generic "Provider returned error", which explains nothing.
+                metadata = node.get("metadata") or {}
+                raw_reason = str(metadata.get("raw", "") or "") if isinstance(metadata, dict) else ""
+                detail = raw_reason or str(node.get("message", "") or "")
+            elif isinstance(node, str):
+                detail = node
+        except (json.JSONDecodeError, AttributeError):
+            detail = ""
+
+    if not detail:
+        detail = head
+
+    detail = " ".join(detail.split())
+    # The remediation advice is printed once below the list, so a per-provider
+    # line only needs the reason itself.
+    detail = re.split(r'(?<=[.!])\s+(?=[A-ZА-Я])', detail)[0]
+    if len(detail) > 160:
+        detail = detail[:157] + "..."
+    return f"HTTP {code}: {detail}" if code and code not in detail else detail
+
+
+def ask_ai(prompt: str, extra_web_context: str = "", on_chunk=None, on_partial_failure=None) -> str:
     """Sends the prompt to the active provider, falling back down the chain on failure.
 
     Raises ProviderError when every attempt fails. It used to *return* the
     failure report as if it were an answer, which meant `larp do` would offer to
     execute the error text as a shell command.
 
-    `on_chunk` is forwarded to the provider for streaming; it is only called for
-    the attempt that succeeds, so a failed provider cannot half-print an answer.
+    `on_chunk` is forwarded to the provider for streaming. An attempt can fail
+    after it has already emitted tokens, so `on_partial_failure(label)` is called
+    in that case to let the caller drop what was printed.
     """
     config = load_config()
     attempts = build_attempt_chain(config)
@@ -2949,7 +3110,7 @@ def ask_ai(prompt: str, extra_web_context: str = "", on_chunk=None) -> str:
             attempt_config[provider]["model"] = model_override
 
         label = describe_attempt(provider, model_override, config)
-        announced = {"done": False}
+        announced = {"done": False, "emitted": False}
 
         def emit(fragment, label=label, index=index, announced=announced):
             # The attribution has to be printed before the first token, not
@@ -2957,6 +3118,7 @@ def ask_ai(prompt: str, extra_web_context: str = "", on_chunk=None) -> str:
             if index > 0 and not announced["done"]:
                 announced["done"] = True
                 print(f"{DIM}[answered by {label}]{RESET}")
+            announced["emitted"] = True
             on_chunk(fragment)
 
         try:
@@ -2965,6 +3127,8 @@ def ask_ai(prompt: str, extra_web_context: str = "", on_chunk=None) -> str:
             )
         except ProviderError as exc:
             failures.append((label, str(exc)))
+            if announced["emitted"] and on_partial_failure:
+                on_partial_failure(label)
             remaining = attempts[index + 1:]
             if remaining:
                 next_label = describe_attempt(remaining[0][0], remaining[0][1], config)
@@ -2981,15 +3145,28 @@ def ask_ai(prompt: str, extra_web_context: str = "", on_chunk=None) -> str:
 
     report = [f"{RED}[-] Every configured provider failed:{RESET}"]
     has_timeout_or_block = False
+    rate_limited = []
     for label, message in failures:
-        first_line = plain_text(message).strip().splitlines()[0] if message.strip() else "unknown error"
-        report.append(f"  {PINK}{label}{RESET} — {first_line}")
-        if any(err in first_line.lower() for err in ["timed out", "connection refused", "connect error", "blocked", "403", "forbidden"]):
+        summary = summarize_provider_error(message)
+        report.append(f"  {PINK}{label}{RESET} — {summary}")
+        low = summary.lower()
+        if any(err in low for err in ["timed out", "connection refused", "connect error", "blocked", "403", "forbidden"]):
             has_timeout_or_block = True
+        if "429" in low or "rate-limit" in low or "rate limit" in low:
+            rate_limited.append(label)
 
-    if has_timeout_or_block:
+    if rate_limited and len(rate_limited) == len(failures):
         report.append(
-            f"\n{YELLOW}💡 Connection timed out or blocked by ISP/Geo-restriction!{RESET}\n"
+            f"\n{YELLOW}[!] Every provider is rate-limited upstream, not misconfigured.{RESET}\n"
+            f"{CYAN}Free OpenRouter models share one pool, so they throttle together. Options:\n"
+            f"  1. Wait a few seconds and retry — these limits are short-lived.\n"
+            f"  2. Add your own upstream key: {BOLD}https://openrouter.ai/settings/integrations{RESET}\n"
+            f"  3. Put a paid or local model at the end of the chain:\n"
+            f"     {BOLD}larp fallback add ollama{RESET}"
+        )
+    elif has_timeout_or_block:
+        report.append(
+            f"\n{YELLOW}[!] Connection timed out or blocked by ISP/Geo-restriction!{RESET}\n"
             f"{CYAN}To fix this, configure a proxy or switch provider:\n"
             f"  1. Set proxy:        {BOLD}larp proxy set http://127.0.0.1:7890{RESET}\n"
             f"  2. Use OpenRouter:   {BOLD}larp config set provider openrouter{RESET}\n"
@@ -3004,7 +3181,7 @@ def ask_ai(prompt: str, extra_web_context: str = "", on_chunk=None) -> str:
 
 
 def ask_ai_streamed(title: str, prompt: str, extra_web_context: str = "",
-                    border_color: str = PINK) -> str:
+                    border_color: str = None) -> str:
     """Asks the AI and prints the answer as it is generated.
 
     Returns the complete answer, or "" if every provider failed (the failure is
@@ -3012,7 +3189,8 @@ def ask_ai_streamed(title: str, prompt: str, extra_web_context: str = "",
     """
     printer = StreamPrinter(title, border_color=border_color)
     try:
-        answer = ask_ai(prompt, extra_web_context, on_chunk=printer.write)
+        answer = ask_ai(prompt, extra_web_context, on_chunk=printer.write,
+                        on_partial_failure=printer.discard_partial)
     except ProviderError as exc:
         printer.finish()
         print(f"\n{exc}\n")
@@ -3448,35 +3626,39 @@ def cmd_clean():
     print_banner()
     print(f"{BOLD}{PINK}Larp System Cleanup & Optimization Wizard:{RESET}\n")
 
+    def confirm(question: str) -> bool:
+        """Ctrl+C during a cleanup prompt should cancel, not raise a traceback."""
+        try:
+            return input(question).strip().lower() in ["y", "yes", "yeah"]
+        except (KeyboardInterrupt, EOFError):
+            print("\nCancelled.")
+            raise SystemExit(0)
+
     cleaned_items = []
     pkg_name, _, _, clean_cmd = detect_package_manager()
 
     if clean_cmd:
         print(f"  {CYAN}Cleaning package manager cache and unneeded packages ({pkg_name})...{RESET}")
-        ans = input(f"  {PINK}Clean package cache ({clean_cmd})? (y/N): {RESET}").strip().lower()
-        if ans in ["y", "yes", "yeah"]:
+        if confirm(f"  {PINK}Clean package cache ({clean_cmd})? (y/N): {RESET}"):
             subprocess.run(clean_cmd, shell=True)
             cleaned_items.append(f"{pkg_name} package cache")
 
     init_name, _, _, _ = detect_init_system()
     if init_name == "systemd":
         print(f"\n  {CYAN}Cleaning old systemd logs (older than 7 days)...{RESET}")
-        ans = input(f"  {PINK}Vacuum journalctl logs? (y/N): {RESET}").strip().lower()
-        if ans in ["y", "yes", "yeah"]:
+        if confirm(f"  {PINK}Vacuum journalctl logs? (y/N): {RESET}"):
             subprocess.run("sudo journalctl --vacuum-time=7d", shell=True)
             cleaned_items.append("Journalctl logs")
     else:
         print(f"\n  {CYAN}Cleaning old rotated log archives in /var/log...{RESET}")
-        ans = input(f"  {PINK}Clean rotated log archives? (y/N): {RESET}").strip().lower()
-        if ans in ["y", "yes", "yeah"]:
+        if confirm(f"  {PINK}Clean rotated log archives? (y/N): {RESET}"):
             subprocess.run("sudo rm -f /var/log/*.gz /var/log/*.[0-9] 2>/dev/null || true", shell=True)
             cleaned_items.append("Rotated /var/log archives")
 
     user_cache = os.path.expanduser("~/.cache")
     if os.path.exists(user_cache):
         print(f"\n  {CYAN}Cleaning user temp cache ({user_cache})...{RESET}")
-        ans = input(f"  {PINK}Clear thumbnails and font cache? (y/N): {RESET}").strip().lower()
-        if ans in ["y", "yes", "yeah"]:
+        if confirm(f"  {PINK}Clear thumbnails and font cache? (y/N): {RESET}"):
             subprocess.run("rm -rf ~/.cache/thumbnails/* ~/.cache/fontconfig/* 2>/dev/null", shell=True)
             cleaned_items.append("Thumbnails & font cache")
 
@@ -3605,8 +3787,10 @@ def offer_to_activate(config: dict, provider_id: str, label: str) -> None:
 
 def cmd_theme(args: list):
     """Interactively select or switch color themes for LARP CLI."""
-    print_banner()
+    # load_config() applies the saved theme, so it has to run before anything is
+    # drawn — otherwise this screen renders in the default palette.
     config = load_config()
+    print_banner()
 
     if not args:
         print(f"{BOLD}{PINK}Available Color Themes:{RESET}\n")
@@ -3643,8 +3827,8 @@ def cmd_theme(args: list):
 
 def cmd_preset(args: list):
     """Interactively select or switch AI Behavior Presets."""
-    print_banner()
     config = load_config()
+    print_banner()
 
     if not args:
         print(f"{BOLD}{PINK}Available AI Behavior Presets:{RESET}\n")
@@ -3725,7 +3909,11 @@ def interactive_config_menu():
         elif choice == "5":
             _config_menu_system(config)
         elif choice == "6":
-            confirm = input(f"{RED}Reset ALL settings to default? [y/N]: {RESET}").strip().lower()
+            try:
+                confirm = input(f"{RED}Reset ALL settings to default? [y/N]: {RESET}").strip().lower()
+            except (KeyboardInterrupt, EOFError):
+                print()
+                continue
             if confirm in ["y", "yes"]:
                 save_config(json.loads(json.dumps(DEFAULT_CONFIG)))
                 print(f"{GREEN}[+] Configuration reset to default settings!{RESET}")
@@ -3735,12 +3923,12 @@ def interactive_config_menu():
 def _select_ollama_model_preset(current_model: str) -> str:
     """Preset selector for Ollama models tailored for weak/medium/strong hardware."""
     print(f"\n{BOLD}{PINK}=== Select Ollama Model Preset for Your Hardware ==={RESET}\n")
-    print(f"{BOLD}{YELLOW}⚡ Ultra-Potato / Low RAM (1-2GB VRAM/RAM, Weak CPU):{RESET}")
+    print(f"{BOLD}{YELLOW}[LOW] Ultra-Potato / Low RAM (1-2GB VRAM/RAM, Weak CPU):{RESET}")
     print(f"  1) {CYAN}qwen2.5:0.5b{RESET}   (~390 MB RAM — Blistering fast on ancient CPUs)")
     print(f"  2) {CYAN}qwen2.5:1.5b{RESET}   (~980 MB RAM — Smart ultra-lightweight model)")
     print(f"  3) {CYAN}smollm:135m{RESET}    (~200 MB RAM — Micro model for weak PCs)\n")
 
-    print(f"{BOLD}{GREEN}💡 Medium / Standard Hardware (4-8GB VRAM/RAM):{RESET}")
+    print(f"{BOLD}{GREEN}[STD] Medium / Standard Hardware (4-8GB VRAM/RAM):{RESET}")
     print(f"  4) {CYAN}llama3.2:3b{RESET}    (~2.0 GB RAM — Meta fast & smart)")
     print(f"  5) {CYAN}mistral{RESET}        (~4.1 GB RAM — Balanced default)")
     print(f"  6) {CYAN}qwen2.5:7b{RESET}     (~4.5 GB RAM — High accuracy code & chat)\n")
