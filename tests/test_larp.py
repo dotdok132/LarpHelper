@@ -27,6 +27,7 @@ import tarfile
 import tempfile
 import threading
 import unittest
+import unittest.mock
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 LARP_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bin", "larp")
@@ -880,6 +881,82 @@ class TestOpenRouterConfig(unittest.TestCase):
             self.assertEqual(larp.get_openrouter_models(), [])
         finally:
             larp.OPENROUTER_URL = original
+
+
+@unittest.skipUnless(hasattr(larp, "probe_microphone"), "Mic diagnostics not present in bin/larp")
+class TestMicrophoneDiagnostics(unittest.TestCase):
+    """A muted microphone must stay distinguishable from a quiet room.
+
+    Passive listening treats silence as normal, so without a separate "failed"
+    outcome a dead input looks exactly like nobody talking and `larp talk`
+    listens to nothing until Ctrl+C.
+    """
+
+    def test_the_three_outcomes_are_distinct(self):
+        outcomes = {larp.RECORDING_OK, larp.RECORDING_SILENT, larp.RECORDING_FAILED}
+        self.assertEqual(len(outcomes), 3)
+
+    def test_probe_reports_when_no_recorder_is_installed(self):
+        real_which = larp.shutil.which
+        larp.shutil.which = lambda name: None
+        try:
+            ok, reason = larp.probe_microphone()
+        finally:
+            larp.shutil.which = real_which
+        self.assertFalse(ok)
+        self.assertIn("recorder", reason)
+
+    def test_probe_surfaces_the_recorders_own_error(self):
+        # The reason is shown to the user, so it has to be the real cause rather
+        # than a generic "mic test failed".
+        real_which, real_popen = larp.shutil.which, larp.subprocess.Popen
+
+        class DeadRecorder:
+            def terminate(self): pass
+            def kill(self): pass
+            def communicate(self, timeout=None):
+                return (b"", b"pw-record: failed to connect: No such device")
+
+        larp.shutil.which = lambda name: "/usr/bin/pw-record" if name == "pw-record" else None
+        larp.subprocess.Popen = lambda *a, **k: DeadRecorder()
+        try:
+            ok, reason = larp.probe_microphone()
+        finally:
+            larp.shutil.which, larp.subprocess.Popen = real_which, real_popen
+        self.assertFalse(ok)
+        self.assertIn("No such device", reason)
+
+    def test_problem_report_names_a_concrete_next_step(self):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            larp.report_microphone_problem("no audio data was captured")
+        report = plain(buf.getvalue())
+        self.assertIn("no audio data was captured", report)
+        self.assertIn("pavucontrol", report)
+        self.assertIn("larp voice test", report)
+
+    def test_string_wrapper_still_returns_a_path(self):
+        # cmd_listen and the diagnostics use the simple form; it must keep
+        # returning a plain string rather than the tuple.
+        real = larp.record_user_speech_status
+        larp.record_user_speech_status = lambda *a, **k: ("/tmp/x.wav", larp.RECORDING_OK)
+        try:
+            self.assertEqual(larp.record_user_speech(), "/tmp/x.wav")
+        finally:
+            larp.record_user_speech_status = real
+
+    def test_typed_query_returns_none_on_ctrl_d_and_text_otherwise(self):
+        # None means leave the session, "" means retry listening, text is a
+        # query. Collapsing None into "" would make Ctrl+D an infinite loop.
+        with unittest.mock.patch("builtins.input", side_effect=EOFError):
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertIsNone(larp._ask_typed_query("Could not understand speech."))
+
+        with unittest.mock.patch("builtins.input", return_value="  "):
+            self.assertEqual(larp._ask_typed_query("x"), "")
+
+        with unittest.mock.patch("builtins.input", return_value=" what time is it "):
+            self.assertEqual(larp._ask_typed_query("x"), "what time is it")
 
 
 @unittest.skipUnless(hasattr(larp, "_clean_text_for_speech"), "Voice engine not present in bin/larp")
