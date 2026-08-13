@@ -559,6 +559,7 @@ DESTRUCTIVE_PATTERNS = [
     (r'\bchown\b[^|;&]*\s+/(\s|$)', "recursive chown of /"),
     (r':\(\)\s*\{.*\}\s*;?\s*:', "fork bomb"),
     (r'>\s*/etc/(passwd|shadow|fstab)', "overwrite of a critical system file"),
+    (r'\b(shutdown|poweroff|reboot|halt|init\s+[06]|systemctl\s+(poweroff|reboot|halt|suspend|hibernate))\b', "system shutdown or reboot"),
 ]
 
 
@@ -756,7 +757,11 @@ def execute_voice_command(cmd: str) -> str:
         return ""
 
     if find_destructive_pattern(cmd):
-        return f"[Skipped dangerous command: {cmd}]"
+        return f"[Skipped dangerous/power command: {cmd}]"
+
+    cmd_lower = cmd.lower()
+    if any(pwr in cmd_lower for pwr in ["shutdown", "poweroff", "reboot", "halt", "init 0", "init 6", "systemctl poweroff", "systemctl reboot"]):
+        return f"[Blocked system shutdown/reboot command: {cmd}]"
 
     first_word = cmd.strip().split()[0].lower()
     gui_apps = [
@@ -1600,7 +1605,13 @@ def cmd_talk():
                     _HUD_FULL_SCREEN = True
 
             _HUD_LAST_USER = user_text
-            if user_text.lower() in ["exit", "quit", "пока", "выход", "стоп"]:
+            u_lower = user_text.lower()
+            exit_phrases = [
+                "exit", "quit", "пока", "выход", "стоп", "хватит", "отмена",
+                "заверши работу", "заверши свою работу", "завершить работу",
+                "выключи ассистента", "выключи голосовой", "закройся", "до свидания"
+            ]
+            if any(phrase in u_lower for phrase in exit_phrases):
                 _HUD_LAST_AI = "До свидания! Хорошего дня!"
                 _render_talk_hud("[SPEAK]", "GOODBYE!", _HUD_LAST_USER, _HUD_LAST_AI)
                 tts_synthesize_and_play(_HUD_LAST_AI)
@@ -1610,10 +1621,8 @@ def cmd_talk():
             voice_prompt = (
                 f"{user_text}\n\n"
                 "[Инструкция голосового ассистента:\n"
-                "1. Если пользователь просит открыть приложение, выключить/перезагрузить ПК, создавать файлы/папки или выполнить любое системное действие — "
-                "ОБЯЗАТЕЛЬНО напиши runnable bash-команду в блоке ```bash ... ``` И 1 короткую фразу голосом!\n"
-                "Пример: Открываю браузер.\n```bash\nfirefox &\n```\n"
-                "2. Если это просто разговор — ответь кратко в 1-2 предложениях.\n"
+                "1. Если пользователь просит открыть приложение или выполнить безобидное действие — напиши runnable bash-команду в ```bash ... ``` И 1 короткую фразу голосом.\n"
+                "2. КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО вызывать shutdown, reboot, poweroff! Если пользователь просит завершить работу — просто попрощайся.\n"
                 "3. НЕ ИСПОЛЬЗУЙ эмодзи и смайлики!]"
             )
             response = ask_ai(voice_prompt)
