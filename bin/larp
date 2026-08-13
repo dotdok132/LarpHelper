@@ -2750,10 +2750,22 @@ def ask_ai(prompt: str, extra_web_context: str = "", on_chunk=None) -> str:
         return response
 
     report = [f"{RED}[-] Every configured provider failed:{RESET}"]
+    has_timeout_or_block = False
     for label, message in failures:
         first_line = plain_text(message).strip().splitlines()[0] if message.strip() else "unknown error"
         report.append(f"  {PINK}{label}{RESET} — {first_line}")
-    if len(attempts) == 1:
+        if any(err in first_line.lower() for err in ["timed out", "connection refused", "connect error", "blocked", "403", "forbidden"]):
+            has_timeout_or_block = True
+
+    if has_timeout_or_block:
+        report.append(
+            f"\n{YELLOW}💡 Connection timed out or blocked by ISP/Geo-restriction!{RESET}\n"
+            f"{CYAN}To fix this, configure a proxy or switch provider:\n"
+            f"  1. Set proxy:        {BOLD}larp proxy set http://127.0.0.1:7890{RESET}\n"
+            f"  2. Use OpenRouter:   {BOLD}larp config set provider openrouter{RESET}\n"
+            f"  3. Use local Ollama: {BOLD}larp config set provider ollama{RESET}"
+        )
+    elif len(attempts) == 1:
         report.append(f"\n{CYAN}Set up a fallback chain so larp can try another provider: "
                       f"{BOLD}larp fallback add <provider> [model]{RESET}")
     result = "\n".join(report)
