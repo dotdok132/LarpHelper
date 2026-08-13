@@ -3004,41 +3004,81 @@ def offer_to_activate(config: dict, provider_id: str, label: str) -> None:
 
 
 def interactive_config_menu():
-    """Interactive step-by-step TUI settings menu."""
+    """Categorized interactive TUI settings manager."""
     while True:
         config = load_config()
         curr_p = config.get("provider", "ollama").upper()
+        vc = config.get("voice", {})
+        tts_engine = vc.get("tts_engine", "auto")
+        tts_voice = vc.get("rhvoice_voice", "Elena") if tts_engine == "rhvoice" else vc.get("tts_voice", "nova") if tts_engine == "openai" else "default"
+        stt_info = _detect_stt_engine(config) or "Not set"
 
         conf_lines = [
-            f"  {CYAN}Active AI Provider:{RESET}     {BOLD}{PINK}{curr_p}{RESET}",
-            f"  {CYAN}Web Search (DuckDuckGo):{RESET} {'Enabled' if config.get('web_search', True) else 'Disabled'}",
-            f"  {CYAN}Auto-Repair (No Prompt):{RESET} {'Enabled (Instant Fix)' if config.get('auto_fix', False) else 'Disabled (Ask y/N)'}\n",
-            f"  {BOLD}{PINK}1.{RESET} Switch Active AI Provider (Ollama / Gemini / Claude / OpenAI / OpenRouter)",
-            f"  {BOLD}{PINK}2.{RESET} Configure Google Gemini API",
-            f"  {BOLD}{PINK}3.{RESET} Configure Anthropic Claude API",
-            f"  {BOLD}{PINK}4.{RESET} Configure OpenAI API",
-            f"  {BOLD}{PINK}5.{RESET} Configure OpenRouter (one key, ~400 models)",
-            f"  {BOLD}{PINK}6.{RESET} Configure Ollama (Model / URL)",
-            f"  {BOLD}{PINK}7.{RESET} Toggle Web Search (On/Off)",
-            f"  {BOLD}{PINK}8.{RESET} Toggle Auto-Repair Mode (On/Off)",
-            f"  {BOLD}{PINK}9.{RESET} Reset Configuration to Defaults",
-            f"  {BOLD}{PINK}0.{RESET} Save & Exit"
+            f"  {CYAN}Active AI Engine:{RESET}     {BOLD}{PINK}{curr_p}{RESET}",
+            f"  {CYAN}Voice Assistant:{RESET}      {GREEN}{tts_engine.upper()}{RESET} [{tts_voice}]  | STT: {GREEN}{stt_info.split()[0]}{RESET}",
+            f"  {CYAN}System Behavior:{RESET}      Web: {'ON' if config.get('web_search', True) else 'OFF'}  | Auto-Fix: {'ON' if config.get('auto_fix', False) else 'OFF'}\n",
+            f"  {BOLD}{PINK}1.{RESET} 🤖 AI Providers & Models   (Gemini, Claude, OpenAI, Ollama, OpenRouter)",
+            f"  {BOLD}{PINK}2.{RESET} 🎙️ Voice Assistant Hub      (Select Voice, STT, VAD Auto-Stop, Rec Time)",
+            f"  {BOLD}{PINK}3.{RESET} ⚙️ System & Fallback Chain  (Web Search, Auto-Fix Mode, Fallback Order)",
+            f"  {BOLD}{PINK}4.{RESET} 🔄 Reset All Configuration to Defaults",
+            f"  {BOLD}{PINK}0.{RESET} 💾 Save & Exit Master Control"
         ]
 
         print_banner()
-        print_box("Larp AI Interactive Config Menu", "\n".join(conf_lines), border_color=PINK)
+        print_box("Larp AI Configurator Hub", "\n".join(conf_lines), border_color=PINK)
         print()
 
         try:
-            choice = input(f"{PINK}{BOLD}Select an option [0-9]: {RESET}").strip()
+            choice = input(f"{PINK}{BOLD}Select Category [0-4]: {RESET}").strip()
         except (KeyboardInterrupt, EOFError):
             print("\nExiting configuration.")
             break
 
         if choice == "0":
-            print(f"\n{GREEN}[+] Configuration saved. Great job!{RESET}\n")
+            print(f"\n{GREEN}[+] All settings saved successfully! (^_^){RESET}\n")
+            break
+        elif choice == "1":
+            _config_menu_providers(config)
+        elif choice == "2":
+            _cmd_voice_setup()
+        elif choice == "3":
+            _config_menu_system(config)
+        elif choice == "4":
+            confirm = input(f"{RED}Reset ALL settings to default? [y/N]: {RESET}").strip().lower()
+            if confirm in ["y", "yes"]:
+                save_config(json.loads(json.dumps(DEFAULT_CONFIG)))
+                print(f"{GREEN}[+] Configuration reset to default settings!{RESET}")
+                time.sleep(1)
+
+
+def _config_menu_providers(config: dict):
+    """Sub-menu for AI Providers and Models."""
+    while True:
+        config = load_config()
+        curr_p = config.get("provider", "ollama").upper()
+
+        lines = [
+            f"  {CYAN}Active Provider:{RESET} {BOLD}{PINK}{curr_p}{RESET}\n",
+            f"  {BOLD}{PINK}1.{RESET} Set Active Provider (Ollama / Gemini / Claude / OpenAI / OpenRouter)",
+            f"  {BOLD}{PINK}2.{RESET} Configure Google Gemini (API Key / Model)",
+            f"  {BOLD}{PINK}3.{RESET} Configure Anthropic Claude (API Key / Model)",
+            f"  {BOLD}{PINK}4.{RESET} Configure OpenAI ChatGPT (API Key / Model)",
+            f"  {BOLD}{PINK}5.{RESET} Configure OpenRouter (One key for 400+ models)",
+            f"  {BOLD}{PINK}6.{RESET} Configure Local Ollama (Server URL / Model)",
+            f"  {BOLD}{PINK}0.{RESET} Return to Master Menu"
+        ]
+
+        print_banner()
+        print_box("AI Providers & Models Configurator", "\n".join(lines), border_color=CYAN)
+        print()
+
+        try:
+            choice = input(f"{CYAN}Select option [0-6]: {RESET}").strip()
+        except (KeyboardInterrupt, EOFError):
             break
 
+        if choice == "0":
+            break
         elif choice == "1":
             print(f"\n{CYAN}Select active AI Provider:{RESET}")
             print(f"  1) {PINK}Ollama{RESET} (Local Neural Network)")
@@ -3051,80 +3091,87 @@ def interactive_config_menu():
             if p_ans in p_map:
                 config["provider"] = p_map[p_ans]
                 save_config(config)
-
         elif choice == "2":
             print(f"\n{CYAN}─── Configure Google Gemini API ───{RESET}")
             key = input(f"Enter Gemini API Key (Enter to keep current): ").strip()
-            if key:
-                config["gemini"]["api_key"] = key
+            if key: config["gemini"]["api_key"] = key
             model = input(f"Gemini Model [{config['gemini']['model']} / 'auto']: ").strip()
-            if model:
-                config["gemini"]["model"] = model
+            if model: config["gemini"]["model"] = model
             save_config(config)
             offer_to_activate(config, "gemini", "Google Gemini")
-
         elif choice == "3":
             print(f"\n{CYAN}─── Configure Anthropic Claude API ───{RESET}")
             key = input(f"Enter Claude API Key (Enter to keep current): ").strip()
-            if key:
-                config["claude"]["api_key"] = key
+            if key: config["claude"]["api_key"] = key
             model = input(f"Claude Model [{config['claude']['model']}]: ").strip()
-            if model:
-                config["claude"]["model"] = model
+            if model: config["claude"]["model"] = model
             save_config(config)
             offer_to_activate(config, "claude", "Anthropic Claude")
-
         elif choice == "4":
             print(f"\n{CYAN}─── Configure OpenAI API ───{RESET}")
             key = input(f"Enter OpenAI API Key (Enter to keep current): ").strip()
-            if key:
-                config["openai"]["api_key"] = key
+            if key: config["openai"]["api_key"] = key
             model = input(f"OpenAI Model [{config['openai']['model']}]: ").strip()
-            if model:
-                config["openai"]["model"] = model
+            if model: config["openai"]["model"] = model
             save_config(config)
             offer_to_activate(config, "openai", "OpenAI")
-
         elif choice == "5":
             print(f"\n{CYAN}─── Configure OpenRouter ───{RESET}")
-            print(f"{DIM}One API key for Claude, Gemini, GPT, Llama and ~400 other models.{RESET}")
-            print(f"{DIM}Get a key at https://openrouter.ai/keys{RESET}")
             key = input(f"Enter OpenRouter API Key (Enter to keep current): ").strip()
-            if key:
-                config["openrouter"]["api_key"] = key
-            print(f"{DIM}Model IDs are namespaced, e.g. anthropic/claude-sonnet-5, google/gemini-2.5-flash.{RESET}")
-            print(f"{DIM}Run 'larp config models' to browse the full list.{RESET}")
+            if key: config["openrouter"]["api_key"] = key
             model = input(f"OpenRouter Model [{config['openrouter']['model']}]: ").strip()
-            if model:
-                config["openrouter"]["model"] = model
+            if model: config["openrouter"]["model"] = model
             save_config(config)
             offer_to_activate(config, "openrouter", "OpenRouter")
-
         elif choice == "6":
             print(f"\n{CYAN}─── Configure Ollama ───{RESET}")
             url = input(f"Ollama URL [{config['ollama']['url']}]: ").strip()
-            if url:
-                config["ollama"]["url"] = url
+            if url: config["ollama"]["url"] = url
             model = input(f"Ollama Model [{config['ollama']['model']}]: ").strip()
-            if model:
-                config["ollama"]["model"] = model
+            if model: config["ollama"]["model"] = model
             save_config(config)
 
-        elif choice == "7":
+
+def _config_menu_system(config: dict):
+    """Sub-menu for System & Behavior settings."""
+    while True:
+        config = load_config()
+        lines = [
+            f"  {CYAN}Web Search:{RESET}        {'Enabled' if config.get('web_search', True) else 'Disabled'}",
+            f"  {CYAN}Auto-Repair:{RESET}       {'Enabled (Instant)' if config.get('auto_fix', False) else 'Disabled (Ask y/N)'}\n",
+            f"  {BOLD}{PINK}1.{RESET} Toggle Web Search (On/Off)",
+            f"  {BOLD}{PINK}2.{RESET} Toggle Auto-Repair Mode (On/Off)",
+            f"  {BOLD}{PINK}3.{RESET} View Provider Fallback Chain",
+            f"  {BOLD}{PINK}4.{RESET} Clear Fallback Chain",
+            f"  {BOLD}{PINK}0.{RESET} Return to Master Menu"
+        ]
+
+        print_banner()
+        print_box("System & Behavior Configurator", "\n".join(lines), border_color=PURPLE)
+        print()
+
+        try:
+            choice = input(f"{CYAN}Select option [0-4]: {RESET}").strip()
+        except (KeyboardInterrupt, EOFError):
+            break
+
+        if choice == "0":
+            break
+        elif choice == "1":
             config["web_search"] = not config.get("web_search", True)
             save_config(config)
-            print(f"{GREEN}Web Search toggled to: {config['web_search']}{RESET}")
-
-        elif choice == "8":
+            print(f"{GREEN}[+] Web Search toggled to: {config['web_search']}{RESET}")
+        elif choice == "2":
             config["auto_fix"] = not config.get("auto_fix", False)
             save_config(config)
-            print(f"{GREEN}Auto-Repair toggled to: {config['auto_fix']}{RESET}")
-
-        elif choice == "9":
-            save_config(json.loads(json.dumps(DEFAULT_CONFIG)))
-            print(f"{GREEN}Configuration reset to default settings!{RESET}")
-
-        time.sleep(0.5)
+            print(f"{GREEN}[+] Auto-Repair toggled to: {config['auto_fix']}{RESET}")
+        elif choice == "3":
+            show_fallback_chain(config)
+            input(f"\n{DIM}Press Enter to return...{RESET}")
+        elif choice == "4":
+            config["fallback_chain"] = []
+            save_config(config)
+            print(f"{GREEN}[+] Fallback chain cleared.{RESET}")
 
 
 def show_fallback_chain(config: dict):
