@@ -2874,6 +2874,10 @@ def cmd_help():
 
     print(f"{BOLD}{PINK}Usage:{RESET}")
     print(f"  {CYAN}larp{RESET} <command> [arguments]\n")
+    print(f"{BOLD}{PINK}Voice Assistant Commands:{RESET}")
+    print(f"  {PINK}{BOLD}talk{RESET}                 {DIM}Interactive hands-free voice loop (speak & listen){RESET}")
+    print(f"  {PINK}{BOLD}listen{RESET} {CYAN}[sec]{RESET}          {DIM}Record microphone for N seconds and process query{RESET}")
+    print(f"  {PINK}{BOLD}speak{RESET} {CYAN}<text>{RESET}         {DIM}Synthesize text into spoken neural voice{RESET}\n")
     print(f"{BOLD}{PINK}Available Commands:{RESET}")
     print(f"  {PINK}{BOLD}fetch{RESET}                {DIM}Aesthetic system informer (Neofetch replacement){RESET}")
     print(f"  {PINK}{BOLD}do{RESET} {CYAN}<task>{RESET}           {DIM}Autonomous AI Terminal Copilot — translates tasks to shell pipelines{RESET}")
