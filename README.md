@@ -1,16 +1,16 @@
 # 🌸 LarpLinux Supreme AI Companion (`larp`)
 
-> **Next-Generation Autonomous AI Companion and System Automation Engine for Arch-based Linux Distributions.**
+> **Next-Generation Autonomous AI Companion and System Automation Engine for any Linux distribution.**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-f5a9b8.svg)](LICENSE)
 [![Python Version](https://img.shields.io/badge/Python-3.8%2B-5bcefa.svg)](https://python.org)
-[![Platform](https://img.shields.io/badge/Platform-Arch%20Linux%20%7C%20LarpLinux-purple.svg)]()
+[![Platform](https://img.shields.io/badge/Platform-Linux%20(any%20distro%20%7C%20any%20init)-purple.svg)]()
 [![Zero Dependencies](https://img.shields.io/badge/Dependencies-Standard%20Library%20Only-green.svg)]()
 
 ```text
   ╭───╮    █░░ █▀█ █▀█ █▀█ █░░ ░▀█ █▄░█ █░█ █░█
   │   │    █▄▄ █▀█ █▀▄ █▀▀ █▄▄ █▄█ █░▀█ █▄█ ▄▀▄
-  ╰───╯   ─── LarpLinux OS Supreme AI Companion v4.0 ───
+  ╰───╯   ─── LarpLinux OS Supreme AI Companion v4.1 ───
 ```
 
 ---
@@ -19,10 +19,12 @@
 
 - **🌸 Zero Dependencies**: Built strictly using standard Python 3.8+ libraries (`urllib`, `json`, `subprocess`, `sys`). No `pip install` required!
 - **🤖 Universal AI Engine**: Native support for **Ollama** (local VRAM-saver engine with `keep_alive: 0`), **OpenRouter** (one API key for ~400 models — Claude, Gemini, GPT, Llama and more), **Google Gemini API** (with dynamic model auto-discovery), **Anthropic Claude API**, and **OpenAI ChatGPT API**.
-- **⚡ 19 Integrated OS Modules**: Includes terminal copilot (`larp do`), log auto-repair engine (`larp fix`), system informer (`larp fetch`), benchmark (`larp bench`), translator (`larp translate`), cleanup wizard (`larp clean`), and package architect (`larp get-create`).
+- **⚡ Integrated OS Modules**: Includes terminal copilot (`larp do`), log auto-repair engine (`larp fix`), system informer (`larp fetch`), benchmark (`larp bench`), translator (`larp translate`), cleanup wizard (`larp clean`), and package architect (`larp get-create`).
+- **💬 Live Streaming Answers**: `larp why`, `larp chat`, `larp code` and `larp translate` print the answer as the model writes it, so a slow local model shows progress instead of a spinner.
 - **🌸 Truecolor Glassmorphic UI**: Truecolor pastel-pink (`#F5A9B8`) and cyan (`#5BCEFA`) console palette with clean borders and emoji-free aesthetics.
 - **🛡️ Terminal Kaomoji Persona**: Cute, enthusiastic AI companion persona (`(^--^)`, `(=^.^=)`, `\(^o^)/`) configured with safe console ASCII kaomoji that render cleanly in any Linux terminal without broken font boxes.
-- **🛠️ Auto-Repair Engine**: Scans system logs (`journalctl -p 3`), synthesizes exact root causes, and executes verified single-line resolution pipelines with quote-balancing protection.
+- **🛠️ Auto-Repair Engine**: Scans system logs (`journalctl -p 3`), synthesizes exact root causes, and proposes a single-line resolution pipeline.
+- **🛡️ Guarded Execution**: A generated command is only offered for execution when it is a real command — prose, explanations and malformed quoting are rejected rather than "repaired", and destructive patterns (`rm -rf /`, `mkfs`, `dd of=/dev/…`) require typing `I UNDERSTAND`, even with auto-repair on.
 
 ---
 
@@ -45,7 +47,7 @@ chmod +x install.sh
 
 ---
 
-## 🛠️ Module Overview (19 Modules)
+## 🛠️ Module Overview
 
 | Command | Description |
 |---|---|
@@ -56,8 +58,9 @@ chmod +x install.sh
 | `larp config` | Interactive step-by-step TUI settings menu |
 | `larp config models [text]` | Browse OpenRouter model IDs, optionally filtered |
 | `larp fallback` | Manage the provider fallback chain (add / remove / clear) |
-| `larp clean` | Disk cleanup wizard — pacman cache, journalctl logs & orphans |
+| `larp clean` | Disk cleanup wizard — package cache, logs & orphans (any package manager) |
 | `larp backup` | Snapshot & config backup manager (`~/.config/larp`, `niri`, `fwm`, `waybar`) |
+| `larp restore [archive]` | Restore configuration from a backup archive |
 | `larp alias` | Installs short terminal shortcuts (`l`, `ld`, `lw`, `lc`, `lg`, `lf`) into `~/.bashrc` |
 | `larp bench` | Speedtest and latency benchmark for all AI providers |
 | `larp status` | Real-time system radar — CPU/RAM/Disk loads & active AI engine |
@@ -70,6 +73,7 @@ chmod +x install.sh
 | `larp get-list` | Registry table of available software recipes |
 | `larp get-create <task>` | AI Pack Architect with live Arch/AUR package validation |
 | `larp help` | Display complete command reference |
+| `larp version` | Print the installed larp version |
 
 ---
 
@@ -142,6 +146,24 @@ and names the provider that actually answered.
 
 ---
 
+## 💾 Backup & restore
+
+`larp backup` archives `~/.config/larp` together with your `niri`, `fwm`,
+`waybar` and `kitty` configuration. The archive contains `config.json` and
+therefore your **API keys**, so it is created with `0600` permissions inside a
+`0700` directory, and the ten most recent archives are kept:
+
+```bash
+larp backup                                        # create
+larp restore                                       # pick one from a list
+larp restore larp-config-backup-20260813_1154.tar.gz
+```
+
+Restoring refuses archive members with absolute paths, `..` components or
+symlinks pointing outside `~/.config`.
+
+---
+
 ## 🧪 Running the tests
 
 The suite uses only the standard library, like larp itself — no pytest, no
@@ -152,7 +174,9 @@ python3 -m unittest discover -s tests -v
 ```
 
 Tests for optional features are skipped when the feature is absent, so the suite
-runs unchanged on any branch.
+runs unchanged on any branch. CI runs the same suite on Python 3.8, 3.11 and
+3.13, lints the installer scripts with `shellcheck`, and smoke-tests the
+commands that must work without a provider or a network connection.
 
 ---
 
