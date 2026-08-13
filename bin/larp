@@ -3421,6 +3421,45 @@ def interactive_config_menu():
                 time.sleep(1)
 
 
+def _select_ollama_model_preset(current_model: str) -> str:
+    """Preset selector for Ollama models tailored for weak/medium/strong hardware."""
+    print(f"\n{BOLD}{PINK}=== Select Ollama Model Preset for Your Hardware ==={RESET}\n")
+    print(f"{BOLD}{YELLOW}⚡ Ultra-Potato / Low RAM (1-2GB VRAM/RAM, Weak CPU):{RESET}")
+    print(f"  1) {CYAN}qwen2.5:0.5b{RESET}   (~390 MB RAM — Blistering fast on ancient CPUs)")
+    print(f"  2) {CYAN}qwen2.5:1.5b{RESET}   (~980 MB RAM — Smart ultra-lightweight model)")
+    print(f"  3) {CYAN}smollm:135m{RESET}    (~200 MB RAM — Micro model for weak PCs)\n")
+
+    print(f"{BOLD}{GREEN}💡 Medium / Standard Hardware (4-8GB VRAM/RAM):{RESET}")
+    print(f"  4) {CYAN}llama3.2:3b{RESET}    (~2.0 GB RAM — Meta fast & smart)")
+    print(f"  5) {CYAN}mistral{RESET}        (~4.1 GB RAM — Balanced default)")
+    print(f"  6) {CYAN}qwen2.5:7b{RESET}     (~4.5 GB RAM — High accuracy code & chat)\n")
+
+    print(f"  7) {PINK}Enter custom model name{RESET} (current: {current_model})\n")
+
+    try:
+        choice = input(f"{CYAN}Select preset [1-7] (Enter to keep '{current_model}'): {RESET}").strip()
+    except (KeyboardInterrupt, EOFError):
+        return current_model
+
+    presets = {
+        "1": "qwen2.5:0.5b",
+        "2": "qwen2.5:1.5b",
+        "3": "smollm:135m",
+        "4": "llama3.2:3b",
+        "5": "mistral",
+        "6": "qwen2.5:7b"
+    }
+
+    if choice in presets:
+        selected = presets[choice]
+        return selected
+    elif choice == "7":
+        c_model = input("Enter custom model name: ").strip()
+        return c_model if c_model else current_model
+
+    return current_model
+
+
 def _config_menu_providers(config: dict):
     """Sub-menu for AI Providers and Models."""
     while True:
@@ -3434,7 +3473,7 @@ def _config_menu_providers(config: dict):
             f"  {BOLD}{PINK}3.{RESET} Configure Anthropic Claude (API Key / Model)",
             f"  {BOLD}{PINK}4.{RESET} Configure OpenAI ChatGPT (API Key / Model)",
             f"  {BOLD}{PINK}5.{RESET} Configure OpenRouter (One key for 400+ models)",
-            f"  {BOLD}{PINK}6.{RESET} Configure Local Ollama (Server URL / Model)",
+            f"  {BOLD}{PINK}6.{RESET} Configure Local Ollama (Hardware Presets: Potato / Medium / Custom)",
             f"  {BOLD}{PINK}0.{RESET} Return to Master Menu"
         ]
 
@@ -3494,12 +3533,13 @@ def _config_menu_providers(config: dict):
             save_config(config)
             offer_to_activate(config, "openrouter", "OpenRouter")
         elif choice == "6":
-            print(f"\n{CYAN}─── Configure Ollama ───{RESET}")
+            print(f"\n{CYAN}─── Configure Local Ollama ───{RESET}")
             url = input(f"Ollama URL [{config['ollama']['url']}]: ").strip()
             if url: config["ollama"]["url"] = url
-            model = input(f"Ollama Model [{config['ollama']['model']}]: ").strip()
-            if model: config["ollama"]["model"] = model
+            selected_model = _select_ollama_model_preset(config["ollama"]["model"])
+            config["ollama"]["model"] = selected_model
             save_config(config)
+            offer_to_activate(config, "ollama", "Ollama (Local AI)")
 
 
 def _config_menu_system(config: dict):
