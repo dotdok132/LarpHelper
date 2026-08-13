@@ -193,7 +193,7 @@ _HUD_FULL_SCREEN = False
 
 
 def _render_talk_hud(status_tag: str, title: str, user_text: str = "", ai_text: str = "", level: float = 0.0, step: int = 0):
-    """Renders a full-console 2D Cyberpunk Studio HUD / Visualizer Canvas for larp talk."""
+    """Renders a full-console 360° Circular Cyberpunk Studio HUD Audio Reactor Canvas for larp talk."""
     cols, rows = shutil.get_terminal_size((80, 24))
     cols = max(60, cols)
     rows = max(16, rows)
@@ -218,61 +218,80 @@ def _render_talk_hud(status_tag: str, title: str, user_text: str = "", ai_text: 
 
     box_w = cols - 4
     status_color = GREEN if "REC" in status_tag or "LISTEN" in status_tag else YELLOW if "THINK" in status_tag or "STT" in status_tag else PINK
-    
-    pad_title = title.center(box_w)
-    pad_face = f"Larp Voice Core:  {face}".center(box_w)
 
+    pad_title = title.center(box_w)
     buffer.append(f"{PINK}│{RESET} {status_color}{BOLD}{pad_title}{RESET} {PINK}│{RESET}")
-    buffer.append(f"{PINK}│{RESET} {CYAN}{BOLD}{pad_face}{RESET} {PINK}│{RESET}")
     buffer.append(f"{PINK}├{'─' * (cols - 2)}┤{RESET}")
 
-    # Calculate 2D visualizer canvas height to fill terminal screen
-    viz_height = max(5, rows - 11)
-    bar_count = min(60, cols - 6)
+    # Calculate 360° Circular Visualizer canvas dimensions
+    viz_height = max(8, rows - 10)
+    cx = (cols - 4) / 2.0
+    cy = (viz_height - 1) / 2.0
 
-    # Calculate peak heights for each column
-    column_levels = []
-    t = step * 0.1
-    for i in range(bar_count):
-        if "SPEAK" in status_tag:
-            val = (0.5 + 0.5 * math.sin(t * 5 + i * 0.28))
-        elif "REC" in status_tag or "LISTEN" in status_tag:
-            val = min(1.0, level * 2.2) * (0.5 + 0.5 * math.sin(t * 6 + i * 0.35))
-            if level < 0.04:
-                val = 0.08 if (i + step) % 5 == 0 else 0.02
-        elif "THINK" in status_tag or "STT" in status_tag or "TRANSCRIB" in status_tag:
-            val = (0.5 + 0.5 * math.sin(t * 8 + i * 0.4))
-        else:
-            val = 0.1
-        column_levels.append(int((viz_height - 1) * val))
-
-    # Build Ultra-HD 2D Peak-Hold Multi-Row Matrix
+    base_radius = min(cx * 0.35, cy * 0.75)
     GOLD = "\033[38;5;220m"
     PURPLE = "\033[38;5;141m"
-    for r in range(viz_height - 1, -1, -1):
-        row_chars = []
-        for c in range(bar_count):
-            h = column_levels[c]
-            if h > r:
-                row_chars.append("█")
-            elif h == r and r > 0:
-                row_chars.append("▀")
-            elif h == r - 1 and r > 1:
-                row_chars.append("▪")
+
+    for y in range(viz_height):
+        row_str = []
+        for x in range(cols - 4):
+            dx = (x - cx) * 0.55  # Character cell aspect ratio adjustment
+            dy = (y - cy)
+            dist = math.sqrt(dx * dx + dy * dy)
+            angle = math.atan2(dy, dx)
+
+            # 360° Circular Audio Reactor Polar Wave Equation
+            if "SPEAK" in status_tag:
+                wave = math.sin(angle * 6.0 + step * 0.4) * 1.8 + math.cos(angle * 10.0 - step * 0.3) * 0.9
+            elif "REC" in status_tag or "LISTEN" in status_tag:
+                amp = min(1.0, level * 2.2)
+                wave = math.sin(angle * 5.0 + step * 0.3) * 2.0 * (amp + 0.2) + math.cos(angle * 8.0 - step * 0.2) * 0.8
+                if level < 0.04:
+                    wave = 0.3 * math.sin(angle * 4.0 + step * 0.1)
+            elif "THINK" in status_tag or "STT" in status_tag or "TRANSCRIB" in status_tag:
+                wave = math.sin(angle * 8.0 + step * 0.5) * 1.5
             else:
-                row_chars.append(" ")
+                wave = 0.0
 
-        line_str = "".join(row_chars).center(cols - 4)
-        if r > viz_height * 0.7:
-            c_color = GOLD
-        elif r > viz_height * 0.4:
-            c_color = PINK
-        elif r > viz_height * 0.2:
-            c_color = PURPLE
-        else:
-            c_color = CYAN
+            target_r = base_radius + wave
+            diff = abs(dist - target_r)
 
-        buffer.append(f"{PINK}│{RESET} {c_color}{line_str}{RESET} {PINK}│{RESET}")
+            if diff < 0.45:
+                color = GOLD if dist > base_radius else PINK
+                row_str.append(f"{color}█{RESET}")
+            elif diff < 0.9:
+                row_str.append(f"{PURPLE}{'▀' if dist > target_r else '▄'}{RESET}")
+            elif diff < 1.4:
+                row_str.append(f"{CYAN}•{RESET}")
+            elif dist < base_radius * 0.45 and (int(dist * 2.5) + step) % 3 == 0:
+                row_str.append(f"{DIM}▪{RESET}")
+            else:
+                row_str.append(" ")
+
+        line_plain = "".join(row_str)
+
+        # Center Kaomoji Core Overlay
+        if y == int(cy):
+            center_text = f"{CYAN}{BOLD} Larp: {face} {RESET}"
+            plain_len = 0
+            insert_pos = 0
+            target_plain_pos = int(cx) - 6
+
+            idx = 0
+            while idx < len(line_plain):
+                if line_plain[idx:idx + 2] == "\033[":
+                    end_ansi = line_plain.find("m", idx)
+                    if end_ansi != -1:
+                        idx = end_ansi + 1
+                        continue
+                plain_len += 1
+                if plain_len == target_plain_pos:
+                    insert_pos = idx
+                idx += 1
+
+            line_plain = line_plain[:insert_pos] + center_text + line_plain[insert_pos + 14:]
+
+        buffer.append(f"{PINK}│{RESET} {line_plain} {PINK}│{RESET}")
 
     # Conversation Footer Box
     buffer.append(f"{PINK}├{'─' * (cols - 2)}┤{RESET}")
