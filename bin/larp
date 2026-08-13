@@ -702,29 +702,16 @@ def tts_synthesize_and_play(text: str, lang: str = "ru"):
     lang = vc.get("language", lang)
     engine = vc.get("tts_engine", "auto")
 
-    # 1. Google Translate TTS API
-    if engine in ["auto", "google"]:
-        chunks = [clean_text[i:i+180] for i in range(0, len(clean_text), 180)]
-        for chunk in chunks[:4]:
-            try:
-                url = f"https://translate.google.com/translate_tts?ie=UTF-8&client=tw-ob&tl={lang}&q={urllib.parse.quote(chunk)}"
-                req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-                with urllib.request.urlopen(req, timeout=8) as resp:
-                    data = resp.read()
-                    with open(TMP_AUDIO_OUTPUT_MP3, "wb") as f:
-                        f.write(data)
-
-                if shutil.which("ffmpeg") and shutil.which("aplay"):
-                    subprocess.run(f"ffmpeg -y -i {TMP_AUDIO_OUTPUT_MP3} {TMP_AUDIO_OUTPUT_WAV} 2>/dev/null && aplay -q {TMP_AUDIO_OUTPUT_WAV} 2>/dev/null", shell=True)
-                elif shutil.which("mpv"):
-                    subprocess.run(f"mpv --no-terminal {TMP_AUDIO_OUTPUT_MP3} 2>/dev/null", shell=True)
-                elif shutil.which("paplay"):
-                    subprocess.run(f"paplay {TMP_AUDIO_OUTPUT_MP3} 2>/dev/null", shell=True)
-                elif shutil.which("spd-say"):
-                    subprocess.run(["spd-say", "-l", lang, chunk], check=False)
-                return
-            except Exception:
-                pass
+    # 1. RHVoice offline neural engine (if installed)
+    rh_bin = shutil.which("RHVoice-test") or shutil.which("rhvoice-client")
+    if (engine == "rhvoice" or engine == "auto") and rh_bin:
+        try:
+            voice_name = "Elena" if lang == "ru" else "clb"
+            cmd = f"echo {shlex.quote(clean_text)} | {rh_bin} -p {voice_name} -o {TMP_AUDIO_OUTPUT_WAV} 2>/dev/null && aplay -q {TMP_AUDIO_OUTPUT_WAV} 2>/dev/null"
+            subprocess.run(cmd, shell=True)
+            return
+        except Exception:
+            pass
 
     # 2. Piper TTS offline
     if (engine == "piper" or engine == "auto") and shutil.which("piper"):
@@ -735,7 +722,33 @@ def tts_synthesize_and_play(text: str, lang: str = "ru"):
         except Exception:
             pass
 
-    # 3. espeak / spd-say offline fallbacks
+    # 3. Google Neural TTS with ffmpeg mastering filter
+    if engine in ["auto", "google"]:
+        chunks = [clean_text[i:i+180] for i in range(0, len(clean_text), 180)]
+        for chunk in chunks[:4]:
+            try:
+                url = f"https://translate.google.com/translate_tts?ie=UTF-8&client=tw-ob&tl={lang}&q={urllib.parse.quote(chunk)}"
+                req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
+                with urllib.request.urlopen(req, timeout=8) as resp:
+                    data = resp.read()
+                    with open(TMP_AUDIO_OUTPUT_MP3, "wb") as f:
+                        f.write(data)
+
+                if shutil.which("ffmpeg") and shutil.which("aplay"):
+                    # Master audio with natural 1.04x tempo, highpass filter (removes low hum), lowpass filter, and volume boost
+                    filter_chain = "atempo=1.04,highpass=f=80,lowpass=f=8000,volume=1.25"
+                    subprocess.run(f"ffmpeg -y -i {TMP_AUDIO_OUTPUT_MP3} -af \"{filter_chain}\" {TMP_AUDIO_OUTPUT_WAV} 2>/dev/null && aplay -q {TMP_AUDIO_OUTPUT_WAV} 2>/dev/null", shell=True)
+                elif shutil.which("mpv"):
+                    subprocess.run(f"mpv --no-terminal {TMP_AUDIO_OUTPUT_MP3} 2>/dev/null", shell=True)
+                elif shutil.which("paplay"):
+                    subprocess.run(f"paplay {TMP_AUDIO_OUTPUT_MP3} 2>/dev/null", shell=True)
+                elif shutil.which("spd-say"):
+                    subprocess.run(["spd-say", "-l", lang, chunk], check=False)
+                return
+            except Exception:
+                pass
+
+    # 4. espeak / spd-say offline fallbacks
     if shutil.which("spd-say"):
         subprocess.run(["spd-say", "-l", lang, clean_text], check=False)
     elif shutil.which("espeak-ng"):
