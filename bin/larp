@@ -1636,8 +1636,84 @@ def _wav_has_audio(path: str, threshold: int = 140) -> bool:
         return True
 
 
+# What a recording attempt ended as. Passive listening means silence is the
+# normal case and must not be reported as a fault — but a capture that did not
+# work has to stay distinguishable from it, or a muted microphone looks exactly
+# like a quiet room and the session waits for speech that can never arrive.
+RECORDING_OK = "ok"
+RECORDING_SILENT = "silent"
+RECORDING_FAILED = "failed"
+
+
+def probe_microphone() -> tuple:
+    """Captures a fraction of a second to see whether the microphone works at all.
+
+    Returns (ok, reason). Content does not matter — a silent room still produces
+    a valid file — so this only asks whether capture produces audio data.
+    """
+    if not (shutil.which("pw-record") or shutil.which("ffmpeg") or shutil.which("arecord")):
+        return (False, "no audio recorder installed (need pipewire, ffmpeg or alsa-utils)")
+
+    ensure_audio_tmp_dir()
+    probe_path = os.path.join(AUDIO_TMP_DIR, "probe.wav")
+    for path in (probe_path,):
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
+    if shutil.which("pw-record"):
+        cmd = ["pw-record", "--rate", "16000", "--channels", "1", probe_path]
+    elif shutil.which("ffmpeg"):
+        cmd = ["ffmpeg", "-y", "-f", "pulse", "-i", "default", "-ac", "1", "-ar", "16000", probe_path]
+    else:
+        cmd = ["arecord", "-D", "default", "-f", "S16_LE", "-r", "16000", "-c", "1", "-q", probe_path]
+
+    try:
+        proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        time.sleep(0.5)
+        proc.terminate()
+        try:
+            _, stderr = proc.communicate(timeout=1.5)
+        except Exception:
+            proc.kill()
+            stderr = b""
+    except Exception as e:
+        return (False, f"could not start {cmd[0]}: {e}")
+
+    if not os.path.exists(probe_path) or os.path.getsize(probe_path) <= 1000:
+        detail = (stderr or b"").decode("utf-8", errors="ignore").strip().splitlines()
+        hint = detail[-1] if detail else "no audio data was captured"
+        return (False, hint)
+
+    try:
+        os.remove(probe_path)
+    except OSError:
+        pass
+    return (True, "")
+
+
+def report_microphone_problem(reason: str):
+    print(f"\n{RED}[-] The microphone is not capturing audio.{RESET}")
+    print(f"{DIM}    {reason}{RESET}")
+    print(f"{CYAN}    Check that it is not muted and that the right input is selected:{RESET}")
+    print(f"      {BOLD}pavucontrol{RESET}{DIM}  (or alsamixer, or wpctl status){RESET}")
+    print(f"{DIM}    Diagnose the whole chain with: {BOLD}larp voice test{RESET}\n")
+
+
 def record_user_speech(duration_sec: int = None, auto_stop: bool = None) -> str:
-    """Records microphone audio using pw-record, ffmpeg (pulse), or arecord with live level meter and VAD auto-stop."""
+    """Records microphone audio. Returns the WAV path, or "" when nothing usable
+    was captured. Use record_user_speech_status() to tell silence from a fault."""
+    path, _ = record_user_speech_status(duration_sec, auto_stop)
+    return path
+
+
+def record_user_speech_status(duration_sec: int = None, auto_stop: bool = None) -> tuple:
+    """Records microphone audio using pw-record, ffmpeg (pulse), or arecord with live level meter and VAD auto-stop.
+
+    Returns (path, status) where status is one of RECORDING_OK, RECORDING_SILENT
+    (nobody spoke — normal while listening passively) or RECORDING_FAILED (the
+    capture itself did not work, which the caller must not treat as silence)."""
     config = load_config()
     vc = config.get("voice", {})
     if duration_sec is None:
@@ -1648,7 +1724,7 @@ def record_user_speech(duration_sec: int = None, auto_stop: bool = None) -> str:
     recorder = shutil.which("pw-record") or shutil.which("ffmpeg") or shutil.which("arecord")
     if not recorder:
         print(f"{RED}[-] Error: No audio recorder found (install pipewire, ffmpeg, or alsa-utils){RESET}")
-        return ""
+        return ("", RECORDING_FAILED)
 
     ensure_audio_tmp_dir()
 
@@ -1715,7 +1791,7 @@ def record_user_speech(duration_sec: int = None, auto_stop: bool = None) -> str:
     except Exception as e:
         viz.stop()
         print(f"\n{RED}[-] Recording error: {e}{RESET}")
-        return ""
+        return ("", RECORDING_FAILED)
     finally:
         if proc:
             try:
@@ -1728,18 +1804,19 @@ def record_user_speech(duration_sec: int = None, auto_stop: bool = None) -> str:
                     pass
         viz.stop()
 
+    # No file, or one holding nothing but a WAV header, means the recorder never
+    # captured anything — a muted or missing input, not a quiet room.
     if not os.path.exists(TMP_AUDIO_INPUT):
-        return ""
+        return ("", RECORDING_FAILED)
 
-    file_size = os.path.getsize(TMP_AUDIO_INPUT)
-    if file_size < 1000:
-        return ""
+    if os.path.getsize(TMP_AUDIO_INPUT) < 1000:
+        return ("", RECORDING_FAILED)
 
     if not has_speech:
-        # User did not speak (room was silent / ambient background noise only). Return empty string silently.
-        return ""
+        # Nobody spoke. Normal while listening passively, so it stays silent.
+        return ("", RECORDING_SILENT)
 
-    return TMP_AUDIO_INPUT
+    return (TMP_AUDIO_INPUT, RECORDING_OK)
 
 
 def _detect_stt_engine(config: dict) -> str:
@@ -1946,10 +2023,15 @@ def _cmd_voice_test():
     # 1. Mic check
     print(f"{CYAN}Step 1: Testing microphone recording (3 seconds)...{RESET}")
     print(f"{DIM}Please speak a test phrase into your microphone!{RESET}")
-    audio_path = record_user_speech(duration_sec=3, auto_stop=False)
+    audio_path, status = record_user_speech_status(duration_sec=3, auto_stop=False)
 
+    if status == RECORDING_FAILED:
+        report_microphone_problem("the recorder produced no audio data")
+        return
     if not audio_path:
-        print(f"{RED}[-] Mic test failed! Audio was not recorded or silent.{RESET}")
+        # Capture worked, so the hardware is fine — the room was just quiet.
+        print(f"{YELLOW}[!] Nothing was heard. The microphone works, but no speech "
+              f"reached it — check the input level or speak louder.{RESET}\n")
         return
 
     print(f"{GREEN}[+] Audio successfully recorded! ({os.path.getsize(audio_path)} bytes){RESET}")
@@ -2190,6 +2272,35 @@ class HudAnimationLoop:
             self.thread.join(timeout=0.2)
 
 
+def _ask_typed_query(problem: str):
+    """Prompts for a typed query when speech did not work.
+
+    Returns the text, "" to retry listening, or None to leave the session.
+    """
+    try:
+        return input(f"{PINK}{BOLD}{problem} Type query (or Enter to retry): {RESET}").strip()
+    except (KeyboardInterrupt, EOFError):
+        print()
+        return None
+
+
+def _fall_back_to_typing() -> bool:
+    """Offers text input after the microphone stopped working.
+
+    Returns True to carry on listening (in case it recovers), False to leave.
+    """
+    try:
+        answer = input(f"{PINK}Keep trying the microphone? (y/N): {RESET}").strip().lower()
+    except (KeyboardInterrupt, EOFError):
+        print()
+        return False
+    if answer in ["y", "yes", "yeah", "д", "да"]:
+        return True
+    print(f"\n{CYAN}Switching to text chat.{RESET}\n")
+    cmd_chat()
+    return False
+
+
 def cmd_talk():
     """Continuous hands-free interactive voice loop with full-console TUI Studio HUD."""
     global _HUD_FULL_SCREEN, _HUD_LAST_USER, _HUD_LAST_AI
@@ -2216,32 +2327,67 @@ def cmd_talk():
         cmd_chat()
         return
 
+    # Probed once here rather than on every loop: passive listening cannot report
+    # a fault per iteration without drowning the HUD, but a session that starts
+    # with a dead microphone would otherwise listen to nothing until Ctrl+C.
+    print(f"{DIM}Checking microphone...{RESET}")
+    mic_ok, mic_reason = probe_microphone()
+    if not mic_ok:
+        report_microphone_problem(mic_reason)
+        try:
+            answer = input(f"{PINK}Continue in text chat instead? (Y/n): {RESET}").strip().lower()
+        except (KeyboardInterrupt, EOFError):
+            print()
+            return
+        if answer in ["", "y", "yes", "yeah", "д", "да"]:
+            print()
+            cmd_chat()
+        return
+
     _HUD_FULL_SCREEN = True
     _HUD_LAST_USER = ""
     _HUD_LAST_AI = ""
+    capture_failures = 0
 
     try:
         while True:
             _render_talk_hud("[REC]", "LISTENING (Speak into microphone...)", _HUD_LAST_USER, _HUD_LAST_AI)
-            audio_file = record_user_speech()
+            audio_file, status = record_user_speech_status()
 
-            if not audio_file:
-                # User did not speak (quiet room). Continue passive listening in full-screen HUD mode!
+            if status == RECORDING_SILENT:
+                # Nobody spoke. Normal — keep listening passively.
+                capture_failures = 0
                 continue
-            else:
-                with HudAnimationLoop("[STT]", "TRANSCRIBING SPEECH (Whisper AI...)", _HUD_LAST_USER, _HUD_LAST_AI):
-                    user_text = transcribe_audio_stt(audio_file)
 
+            if status == RECORDING_FAILED:
+                # The microphone worked at startup and has stopped working since
+                # (unplugged, muted, the audio server restarted). One glitch is
+                # not worth interrupting for; a run of them means it is gone.
+                capture_failures += 1
+                if capture_failures < 3:
+                    continue
+                _HUD_FULL_SCREEN = False
+                sys.stdout.write("\033[H\033[J")
+                report_microphone_problem("capture stopped working during the session")
+                if not _fall_back_to_typing():
+                    break
+                _HUD_FULL_SCREEN = True
+                capture_failures = 0
+                continue
+
+            # Only RECORDING_OK reaches here, and it always carries a file.
+            capture_failures = 0
+            with HudAnimationLoop("[STT]", "TRANSCRIBING SPEECH (Whisper AI...)", _HUD_LAST_USER, _HUD_LAST_AI):
+                user_text = transcribe_audio_stt(audio_file)
+
+            if not user_text:
+                _HUD_FULL_SCREEN = False
+                user_text = _ask_typed_query("Could not understand speech.")
+                _HUD_FULL_SCREEN = True
+                if user_text is None:
+                    break
                 if not user_text:
-                    _HUD_FULL_SCREEN = False
-                    try:
-                        user_text = input(f"{PINK}{BOLD}Could not understand speech. Type query (or Enter to retry): {RESET}").strip()
-                        if not user_text:
-                            _HUD_FULL_SCREEN = True
-                            continue
-                    except (KeyboardInterrupt, EOFError):
-                        break
-                    _HUD_FULL_SCREEN = True
+                    continue
 
             _HUD_LAST_USER = user_text
             if is_exit_phrase(user_text):
@@ -2301,7 +2447,16 @@ def cmd_listen(args: list):
 
     print_banner()
     print(f"{CYAN}Recording voice query...{RESET}")
-    audio_file = record_user_speech(duration_sec=duration)
+    audio_file, status = record_user_speech_status(duration_sec=duration)
+
+    if status == RECORDING_FAILED:
+        report_microphone_problem("the recorder produced no audio data")
+        return
+    if status == RECORDING_SILENT:
+        print(f"{YELLOW}[!] Nothing was heard — the microphone works, but no speech "
+              f"reached it.{RESET}\n")
+        return
+
     text = transcribe_audio_stt(audio_file)
 
     if not text:
