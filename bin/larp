@@ -1189,18 +1189,21 @@ def _cmd_voice_setup():
     vc = config.get("voice", {})
 
     print(f"{BOLD}{PINK}=== Larp Voice Assistant Setup Wizard ==={RESET}\n")
-    print(f"1) Configure Groq Whisper API Key (Free online STT)")
-    print(f"2) Change Local Whisper Model (tiny / base / small / medium)")
-    print(f"3) Toggle VAD Silence Auto-Stop ({'Enabled' if vc.get('auto_stop_silence', True) else 'Disabled'})")
-    print(f"4) Change Max Recording Duration ({vc.get('max_duration', 8)}s)")
-    print(f"5) Exit setup\n")
+    print(f"1) 🎙️ Select & Auto-Install Voice Engine (RHVoice Elena / Aleksandr / OpenAI / Piper)")
+    print(f"2) ⚡ Configure Groq Whisper API Key (Free fast online STT)")
+    print(f"3) 🧠 Change Local Whisper Model (tiny / base / small / medium)")
+    print(f"4) ⏱️ Toggle VAD Silence Auto-Stop ({'Enabled' if vc.get('auto_stop_silence', True) else 'Disabled'})")
+    print(f"5) ⌛ Change Max Recording Duration ({vc.get('max_duration', 8)}s)")
+    print(f"6) Exit setup\n")
 
     try:
-        choice = input(f"{CYAN}Select option [1-5]: {RESET}").strip()
+        choice = input(f"{CYAN}Select option [1-6]: {RESET}").strip()
     except (KeyboardInterrupt, EOFError):
         return
 
     if choice == "1":
+        _setup_voice_engine_installer(config)
+    elif choice == "2":
         try:
             key = input(f"{PINK}Enter Groq API Key (gsk_...): {RESET}").strip()
             if key:
@@ -1209,7 +1212,7 @@ def _cmd_voice_setup():
                 save_config(config)
         except (KeyboardInterrupt, EOFError):
             pass
-    elif choice == "2":
+    elif choice == "3":
         print(f"\nAvailable Whisper Models:\n  tiny (fastest)\n  base\n  small (recommended)\n  medium (best quality)\n")
         try:
             m = input(f"{PINK}Select model: {RESET}").strip().lower()
@@ -1219,13 +1222,13 @@ def _cmd_voice_setup():
                 save_config(config)
         except (KeyboardInterrupt, EOFError):
             pass
-    elif choice == "3":
+    elif choice == "4":
         cur = vc.get("auto_stop_silence", True)
         vc["auto_stop_silence"] = not cur
         config["voice"] = vc
         save_config(config)
         print(f"{GREEN}[+] Auto-stop on silence is now {'Enabled' if vc['auto_stop_silence'] else 'Disabled'}.{RESET}")
-    elif choice == "4":
+    elif choice == "5":
         try:
             sec = input(f"{PINK}Enter max duration in seconds [3-30]: {RESET}").strip()
             if sec.isdigit():
@@ -1234,6 +1237,71 @@ def _cmd_voice_setup():
                 save_config(config)
         except (KeyboardInterrupt, EOFError):
             pass
+
+
+def _setup_voice_engine_installer(config: dict):
+    vc = config.get("voice", {})
+    pkg_name, install_prefix, _, _ = detect_package_manager()
+
+    print(f"\n{BOLD}{PINK}=== Select & Auto-Install Voice Engine ==={RESET}\n")
+    print(f"1) 🌸 RHVoice Elena (Russian Female, Natural Offline Voice)")
+    print(f"2) 👨 RHVoice Aleksandr (Russian Male, Natural Offline Voice)")
+    print(f"3) 🌟 OpenAI Nova (Studio Quality Online Voice)")
+    print(f"4) 🌟 OpenAI Shimmer (Studio Quality Female Online Voice)")
+    print(f"5) ⚡ Piper Neural TTS (Offline Engine)")
+    print(f"6) 🌐 Google Translate Voice (Standard)\n")
+
+    try:
+        v_choice = input(f"{CYAN}Select voice [1-6]: {RESET}").strip()
+    except (KeyboardInterrupt, EOFError):
+        return
+
+    if v_choice in ["1", "2"]:
+        voice_target = "Elena" if v_choice == "1" else "Aleksandr"
+        voice_pkg = "rhvoice-voice-elena" if v_choice == "1" else "rhvoice-voice-aleksandr-hq"
+        
+        print(f"\n{PINK}[+] Auto-installing RHVoice ({voice_target}) via {pkg_name}...{RESET}")
+        if pkg_name == "pacman":
+            cmd = f"{install_prefix} rhvoice rhvoice-language-russian {voice_pkg}"
+        elif pkg_name == "apt":
+            cmd = f"{install_prefix} rhvoice rhvoice-russian"
+        else:
+            cmd = f"{install_prefix} rhvoice"
+
+        print(f"{DIM}Executing: {cmd}{RESET}")
+        res = subprocess.run(cmd, shell=True)
+        if res.returncode == 0:
+            vc["tts_engine"] = "rhvoice"
+            vc["rhvoice_voice"] = voice_target
+            config["voice"] = vc
+            save_config(config)
+            print(f"{GREEN}[+] RHVoice ({voice_target}) installed and set as active voice!{RESET}")
+            tts_synthesize_and_play(f"Голос {voice_target} успешно установлен и подключён!")
+        else:
+            print(f"{YELLOW}[!] Package installation finished with exit code {res.returncode}.{RESET}")
+
+    elif v_choice in ["3", "4"]:
+        v_name = "nova" if v_choice == "3" else "shimmer"
+        vc["tts_engine"] = "openai"
+        vc["tts_voice"] = v_name
+        config["voice"] = vc
+        save_config(config)
+        print(f"{GREEN}[+] Voice set to OpenAI ({v_name})!{RESET}")
+        tts_synthesize_and_play("Голосовой ассистент переключен на студийный голос OpenAI.")
+
+    elif v_choice == "5":
+        print(f"\n{PINK}[+] Installing Piper Neural TTS via {pkg_name}...{RESET}")
+        cmd = f"{install_prefix} piper"
+        subprocess.run(cmd, shell=True)
+        vc["tts_engine"] = "piper"
+        config["voice"] = vc
+        save_config(config)
+
+    elif v_choice == "6":
+        vc["tts_engine"] = "google"
+        config["voice"] = vc
+        save_config(config)
+        print(f"{GREEN}[+] Voice set to Google Neural TTS.{RESET}")
 
 
 def cmd_talk():
