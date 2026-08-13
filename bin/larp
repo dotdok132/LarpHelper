@@ -676,14 +676,7 @@ def extract_command_from_line(line: str, tokens: list) -> str:
 
 
 def extract_single_command(response: str) -> str:
-    """Picks one runnable command out of a free-form model response.
-
-    `larp do` used to hand the entire raw response to sanitize_shell_command()
-    and offer *that* for execution — so any explanation the model added, or an
-    error report produced when every provider failed, could be executed as a
-    shell command. A fenced code block wins when present; otherwise the first
-    line that actually looks like a command is used.
-    """
+    """Picks one runnable command out of a free-form model response."""
     if not response:
         return ""
 
@@ -698,6 +691,36 @@ def extract_single_command(response: str) -> str:
             return sanitize_shell_command(candidate)
 
     return ""
+
+
+def execute_voice_command(cmd: str) -> str:
+    """Executes a voice-requested shell command safely in the background or subshell."""
+    if not cmd:
+        return ""
+
+    cmd = sanitize_shell_command(cmd)
+    if not cmd:
+        return ""
+
+    if find_destructive_pattern(cmd):
+        return f"[Skipped dangerous command: {cmd}]"
+
+    # Auto-background GUI applications
+    first_word = cmd.strip().split()[0].lower()
+    gui_apps = [
+        "firefox", "google-chrome", "chrome", "chromium", "zen", "opera", "brave",
+        "telegram", "telegram-desktop", "kitty", "alacritty", "foot", "konsole",
+        "gnome-terminal", "nemo", "thunar", "nautilus", "dolphin", "code", "vscodium",
+        "zed", "mpv", "vlc", "obs", "gimp", "inkscape", "discord", "steam"
+    ]
+    if any(app in first_word for app in gui_apps) and not cmd.strip().endswith("&"):
+        cmd = cmd.strip() + " &"
+
+    try:
+        subprocess.Popen(cmd, shell=True, start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return f"[Executed: {cmd}]"
+    except Exception as e:
+        return f"[Failed to execute {cmd}: {e}]"
 
 
 def load_config() -> dict:
@@ -1535,14 +1558,25 @@ def cmd_talk():
             _render_talk_hud("[THINK]", "THINKING (Larp AI is generating response...)", _HUD_LAST_USER, _HUD_LAST_AI)
             voice_prompt = (
                 f"{user_text}\n\n"
-                "[Инструкция голосового ответа: Отвечай максимально кратко, в 1-2 предложениях, "
-                "по существу. НЕ ИСПОЛЬЗУЙ никаких смайлов, эмодзи и каомодзи!]"
+                "[Инструкция голосового ассистента:\n"
+                "1. Если пользователь просит открыть приложение, выключить/перезагрузить ПК, создавать файлы/папки или выполнить любое системное действие — "
+                "ОБЯЗАТЕЛЬНО напиши runnable bash-команду в блоке ```bash ... ``` И 1 короткую фразу голосом!\n"
+                "Пример: Открываю браузер.\n```bash\nfirefox &\n```\n"
+                "2. Если это просто разговор — ответь кратко в 1-2 предложениях.\n"
+                "3. НЕ ИСПОЛЬЗУЙ эмодзи и смайлики!]"
             )
             response = ask_ai(voice_prompt)
-            _HUD_LAST_AI = response
 
-            _render_talk_hud("[SPEAK]", "SPEAKING RESPONSE...", _HUD_LAST_USER, _HUD_LAST_AI)
-            tts_synthesize_and_play(response, lang="ru")
+            cmd_to_run = extract_single_command(response)
+            exec_info = ""
+            if cmd_to_run:
+                exec_info = execute_voice_command(cmd_to_run)
+
+            clean_ai_text = _clean_text_for_speech(response)
+            _HUD_LAST_AI = clean_ai_text + (f"  {GREEN}{exec_info}{RESET}" if exec_info else "")
+
+            _render_talk_hud("[SPEAK]", f"SPEAKING RESPONSE... {exec_info}", _HUD_LAST_USER, _HUD_LAST_AI)
+            tts_synthesize_and_play(clean_ai_text, lang="ru")
 
     except (KeyboardInterrupt, EOFError):
         pass
@@ -1571,12 +1605,23 @@ def cmd_listen(args: list):
     print(f"{BOLD}{CYAN}Transcribed Query:{RESET} {text}\n")
     voice_prompt = (
         f"{text}\n\n"
-        "[Инструкция голосового ответа: Отвечай максимально кратко, в 1-2 предложениях, "
-        "по существу. НЕ ИСПОЛЬЗУЙ никаких смайлов, эмодзи и каомодзи!]"
+        "[Инструкция голосового ассистента:\n"
+        "1. Если пользователь просит открыть приложение, выключить/перезагрузить ПК, создавать файлы/папки или выполнить любое системное действие — "
+        "ОБЯЗАТЕЛЬНО напиши runnable bash-команду в блоке ```bash ... ``` И 1 короткую фразу голосом!\n"
+        "Пример: Открываю браузер.\n```bash\nfirefox &\n```\n"
+        "2. Если это просто разговор — ответь кратко в 1-2 предложениях.\n"
+        "3. НЕ ИСПОЛЬЗУЙ эмодзи и смайлики!]"
     )
     response = ask_ai(voice_prompt)
-    print_box("Larp AI Response", response, border_color=PINK)
-    tts_synthesize_and_play(response)
+
+    cmd_to_run = extract_single_command(response)
+    exec_info = ""
+    if cmd_to_run:
+        exec_info = execute_voice_command(cmd_to_run)
+
+    print_box("Larp AI Response", response + (f"\n\n{GREEN}{exec_info}{RESET}" if exec_info else ""), border_color=PINK)
+    clean_ai_text = _clean_text_for_speech(response)
+    tts_synthesize_and_play(clean_ai_text)
 
 
 def cmd_speak(args: list):
