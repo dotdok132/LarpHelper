@@ -27,6 +27,7 @@ import random
 import math
 import shlex
 import tempfile
+import base64
 
 __version__ = "4.1.0"
 
@@ -2805,6 +2806,165 @@ def get_valid_gemini_models_from_api(api_key: str) -> list:
 # caller can show the answer being written instead of a spinner.
 
 
+# =============================================================================
+# IMAGE INPUT (clipboard & files)
+# =============================================================================
+
+SUPPORTED_IMAGE_TYPES = {
+    "image/png": ".png",
+    "image/jpeg": ".jpg",
+    "image/webp": ".webp",
+    "image/gif": ".gif",
+}
+
+# Providers reject oversized images, and a screenshot pasted at 4K is mostly
+# wasted tokens anyway. This is the ceiling before larp refuses to send.
+MAX_IMAGE_BYTES = 5 * 1024 * 1024
+
+
+def clipboard_read_command(mime: str = "") -> list:
+    """Returns the argv that reads the clipboard, or [] if no tool is installed.
+
+    Wayland and X11 need different tools, and neither is a Python library, so
+    this shells out the same way the rest of larp talks to the system.
+    """
+    if shutil.which("wl-paste"):
+        return ["wl-paste", "--no-newline"] + (["--type", mime] if mime else ["--list-types"])
+    if shutil.which("xclip"):
+        target = mime or "TARGETS"
+        return ["xclip", "-selection", "clipboard", "-t", target, "-o"]
+    return []
+
+
+def read_clipboard_image():
+    """Returns (mime_type, image_bytes) for an image on the clipboard, else None."""
+    listing = clipboard_read_command()
+    if not listing:
+        return None
+
+    try:
+        offered = subprocess.run(listing, capture_output=True, text=True,
+                                 timeout=5, check=False).stdout
+    except Exception:
+        return None
+
+    available = {line.strip() for line in offered.splitlines() if line.strip()}
+    # Prefer the lossless formats; a screenshot is usually offered as PNG.
+    mime = next((m for m in SUPPORTED_IMAGE_TYPES if m in available), "")
+    if not mime:
+        return None
+
+    try:
+        data = subprocess.run(clipboard_read_command(mime), capture_output=True,
+                              timeout=15, check=False).stdout
+    except Exception:
+        return None
+
+    return (mime, data) if data else None
+
+
+def guess_image_mime(path: str, data: bytes) -> str:
+    """Identifies an image by its magic bytes, falling back to the extension.
+
+    The content is what the API is told about, so trusting a possibly-wrong
+    extension would mean sending a JPEG labelled as a PNG.
+    """
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if data.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if data.startswith(b"RIFF") and data[8:12] == b"WEBP":
+        return "image/webp"
+    if data.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif"
+    extension = os.path.splitext(path)[1].lower()
+    for mime, known in SUPPORTED_IMAGE_TYPES.items():
+        if extension == known:
+            return mime
+    return ""
+
+
+def load_image_file(path: str):
+    """Returns (mime_type, image_bytes) for an image file, else None."""
+    expanded = os.path.expanduser(path)
+    if not os.path.isfile(expanded):
+        print(f"{RED}[-] No such image: {expanded}{RESET}")
+        return None
+    try:
+        with open(expanded, "rb") as f:
+            data = f.read()
+    except OSError as e:
+        print(f"{RED}[-] Could not read {expanded}: {e}{RESET}")
+        return None
+
+    mime = guess_image_mime(expanded, data)
+    if not mime:
+        print(f"{RED}[-] {os.path.basename(expanded)} is not a supported image "
+              f"({', '.join(sorted(SUPPORTED_IMAGE_TYPES))}).{RESET}")
+        return None
+    return (mime, data)
+
+
+def describe_image(image) -> str:
+    """Short human-readable summary of an attachment, for the box title."""
+    mime, data = image
+    return f"{mime.split('/')[-1].upper()}, {round(len(data) / 1024)} KB"
+
+
+def check_image_size(image) -> bool:
+    """Rejects an image the APIs would refuse, with a hint rather than a 400."""
+    _, data = image
+    if len(data) <= MAX_IMAGE_BYTES:
+        return True
+    print(f"{RED}[-] Image is {round(len(data) / 1024 / 1024, 1)} MB — over the "
+          f"{MAX_IMAGE_BYTES // 1024 // 1024} MB limit.{RESET}")
+    print(f"{CYAN}    Shrink it first, e.g. "
+          f"{BOLD}ffmpeg -i in.png -vf scale=1280:-1 out.png{RESET}\n")
+    return False
+
+
+def encode_image_base64(image) -> str:
+    _, data = image
+    return base64.b64encode(data).decode("ascii")
+
+
+# Every API accepts the same base64 bytes wrapped in a different shape, so the
+# wrapping lives here rather than being spelled out inside each provider.
+
+def openai_style_content(text: str, image):
+    """Content for a chat-completions user message (OpenAI and OpenRouter)."""
+    if not image:
+        return text
+    mime, _ = image
+    return [
+        {"type": "text", "text": text},
+        {"type": "image_url",
+         "image_url": {"url": f"data:{mime};base64,{encode_image_base64(image)}"}},
+    ]
+
+
+def claude_content(text: str, image):
+    """Content for an Anthropic message. The image goes first: Claude reads
+    better when the picture precedes the question about it."""
+    if not image:
+        return text
+    mime, _ = image
+    return [
+        {"type": "image",
+         "source": {"type": "base64", "media_type": mime, "data": encode_image_base64(image)}},
+        {"type": "text", "text": text},
+    ]
+
+
+def gemini_parts(text: str, image):
+    """Parts for a Gemini `contents` entry."""
+    parts = [{"text": text}]
+    if image:
+        mime, _ = image
+        parts.insert(0, {"inline_data": {"mime_type": mime, "data": encode_image_base64(image)}})
+    return parts
+
+
 def build_full_prompt(prompt: str, extra_web_context: str) -> str:
     """Assembles the user-visible prompt shared by every provider."""
     full_prompt = f"[SYSTEM & USER CONTEXT]\n{get_system_info()}\n\n"
@@ -2840,7 +3000,7 @@ def iter_sse_events(resp):
             continue
 
 
-def query_provider_ollama(prompt: str, extra_web_context: str, config: dict, on_chunk=None) -> str:
+def query_provider_ollama(prompt: str, extra_web_context: str, config: dict, on_chunk=None, image=None) -> str:
     ollama_conf = config.get("ollama", {})
     ollama_url = ollama_conf.get("url", OLLAMA_URL)
     active_model = ensure_ollama_and_get_model(config)
@@ -2852,6 +3012,10 @@ def query_provider_ollama(prompt: str, extra_web_context: str, config: dict, on_
         "stream": bool(on_chunk),
         "keep_alive": ollama_conf.get("keep_alive", 0)
     }
+    if image:
+        # Ollama takes images alongside the prompt, but only a vision model can
+        # look at them; a text-only model silently ignores the field.
+        payload["images"] = [encode_image_base64(image)]
 
     req = urllib.request.Request(
         f"{ollama_url}/api/generate",
@@ -2894,7 +3058,7 @@ def query_provider_ollama(prompt: str, extra_web_context: str, config: dict, on_
         stop_ollama_and_free_vram(config)
 
 
-def query_provider_gemini(prompt: str, extra_web_context: str, config: dict, on_chunk=None) -> str:
+def query_provider_gemini(prompt: str, extra_web_context: str, config: dict, on_chunk=None, image=None) -> str:
     gemini_conf = config.get("gemini", {})
     api_key = gemini_conf.get("api_key", "").strip()
     user_model = gemini_conf.get("model", "auto").strip()
@@ -2911,7 +3075,7 @@ def query_provider_gemini(prompt: str, extra_web_context: str, config: dict, on_
         },
         "contents": [
             {
-                "parts": [{"text": full_prompt}]
+                "parts": gemini_parts(full_prompt, image)
             }
         ]
     }
@@ -2996,7 +3160,7 @@ def try_gemini_models(candidate_models: list, data: bytes, api_key: str, spinner
     raise ProviderError(f"{RED}Gemini API Error: None of the models {candidate_models[:4]} matched your API key.\nDetails: {last_error}{RESET}")
 
 
-def query_provider_claude(prompt: str, extra_web_context: str, config: dict, on_chunk=None) -> str:
+def query_provider_claude(prompt: str, extra_web_context: str, config: dict, on_chunk=None, image=None) -> str:
     claude_conf = config.get("claude", {})
     api_key = claude_conf.get("api_key", "").strip()
     model = claude_conf.get("model", "claude-opus-5").strip()
@@ -3012,7 +3176,7 @@ def query_provider_claude(prompt: str, extra_web_context: str, config: dict, on_
         "max_tokens": 2048,
         "system": build_system_prompt(),
         "messages": [
-            {"role": "user", "content": build_full_prompt(prompt, extra_web_context)}
+            {"role": "user", "content": claude_content(build_full_prompt(prompt, extra_web_context), image)}
         ]
     }
     if on_chunk:
@@ -3108,7 +3272,7 @@ def read_openai_style_response(resp, spinner, on_chunk, label: str) -> str:
     return "".join(collected).strip()
 
 
-def query_provider_openai(prompt: str, extra_web_context: str, config: dict, on_chunk=None) -> str:
+def query_provider_openai(prompt: str, extra_web_context: str, config: dict, on_chunk=None, image=None) -> str:
     openai_conf = config.get("openai", {})
     api_key = openai_conf.get("api_key", "").strip()
     model = openai_conf.get("model", "gpt-4o-mini").strip()
@@ -3123,7 +3287,8 @@ def query_provider_openai(prompt: str, extra_web_context: str, config: dict, on_
         "model": model,
         "messages": [
             {"role": "system", "content": build_system_prompt()},
-            {"role": "user", "content": build_full_prompt(prompt, extra_web_context)}
+            {"role": "user",
+             "content": openai_style_content(build_full_prompt(prompt, extra_web_context), image)}
         ]
     }
     if on_chunk:
@@ -3171,7 +3336,7 @@ def get_openrouter_models(api_key: str = "") -> list:
         return []
 
 
-def query_provider_openrouter(prompt: str, extra_web_context: str, config: dict, on_chunk=None) -> str:
+def query_provider_openrouter(prompt: str, extra_web_context: str, config: dict, on_chunk=None, image=None) -> str:
     """OpenRouter — one API key for Claude, Gemini, GPT, Llama and ~400 other models.
 
     The API is OpenAI-compatible, so the payload matches query_provider_openai();
@@ -3190,7 +3355,8 @@ def query_provider_openrouter(prompt: str, extra_web_context: str, config: dict,
         "model": model,
         "messages": [
             {"role": "system", "content": build_system_prompt()},
-            {"role": "user", "content": build_full_prompt(prompt, extra_web_context)}
+            {"role": "user",
+             "content": openai_style_content(build_full_prompt(prompt, extra_web_context), image)}
         ]
     }
     if on_chunk:
@@ -3330,7 +3496,8 @@ def summarize_provider_error(message: str) -> str:
     return f"HTTP {code}: {detail}" if code and code not in detail else detail
 
 
-def ask_ai(prompt: str, extra_web_context: str = "", on_chunk=None, on_partial_failure=None) -> str:
+def ask_ai(prompt: str, extra_web_context: str = "", on_chunk=None, on_partial_failure=None,
+           image=None) -> str:
     """Sends the prompt to the active provider, falling back down the chain on failure.
 
     Raises ProviderError when every attempt fails. It used to *return* the
@@ -3368,7 +3535,8 @@ def ask_ai(prompt: str, extra_web_context: str = "", on_chunk=None, on_partial_f
 
         try:
             response = PROVIDER_FUNCS[provider](
-                prompt, extra_web_context, attempt_config, on_chunk=emit if on_chunk else None
+                prompt, extra_web_context, attempt_config,
+                on_chunk=emit if on_chunk else None, image=image
             )
         except ProviderError as exc:
             failures.append((label, str(exc)))
@@ -3426,7 +3594,7 @@ def ask_ai(prompt: str, extra_web_context: str = "", on_chunk=None, on_partial_f
 
 
 def ask_ai_streamed(title: str, prompt: str, extra_web_context: str = "",
-                    border_color: str = None) -> str:
+                    border_color: str = None, image=None) -> str:
     """Asks the AI and prints the answer as it is generated.
 
     Returns the complete answer, or "" if every provider failed (the failure is
@@ -3435,7 +3603,7 @@ def ask_ai_streamed(title: str, prompt: str, extra_web_context: str = "",
     printer = StreamPrinter(title, border_color=border_color)
     try:
         answer = ask_ai(prompt, extra_web_context, on_chunk=printer.write,
-                        on_partial_failure=printer.discard_partial)
+                        on_partial_failure=printer.discard_partial, image=image)
     except ProviderError as exc:
         printer.finish()
         print(f"\n{exc}\n")
@@ -3444,13 +3612,13 @@ def ask_ai_streamed(title: str, prompt: str, extra_web_context: str = "",
     return answer
 
 
-def ask_ai_quietly(prompt: str, extra_web_context: str = "") -> str:
+def ask_ai_quietly(prompt: str, extra_web_context: str = "", image=None) -> str:
     """Asks the AI without streaming, printing the failure instead of raising.
 
     Used by the commands that parse the answer before showing anything.
     """
     try:
-        return ask_ai(prompt, extra_web_context)
+        return ask_ai(prompt, extra_web_context, image=image)
     except ProviderError as exc:
         print(f"\n{exc}\n")
         return ""
@@ -4604,8 +4772,10 @@ def cmd_chat():
     print()
 
     history = []
+    pending_image = None
 
     while True:
+        pending_image = None
         try:
             user_input = input(f"{PINK}{BOLD}You > {RESET}").strip()
         except (KeyboardInterrupt, EOFError):
@@ -4618,6 +4788,27 @@ def cmd_chat():
         if user_input.lower() in ["exit", "quit"]:
             print(f"{CYAN}Goodbye!{RESET}")
             break
+
+        # `/paste <question>` attaches whatever image is on the clipboard to
+        # this one turn, so a screenshot can be dropped into a running session
+        # without leaving it.
+        if user_input.lower().split()[0] in ("/paste", "/image", "/img"):
+            pending_image = read_clipboard_image()
+            if not pending_image:
+                report_missing_clipboard_image()
+                continue
+            if not check_image_size(pending_image):
+                continue
+            user_input = " ".join(user_input.split()[1:]).strip()
+            print(f"{DIM}Attached: {describe_image(pending_image)}{RESET}")
+            if not user_input:
+                try:
+                    user_input = input(f"{PINK}{BOLD}Ask about it > {RESET}").strip()
+                except (KeyboardInterrupt, EOFError):
+                    print()
+                    continue
+            if not user_input:
+                continue
 
         # Exact commands only, never a substring of a sentence: "как исправить
         # конфиг" is a question about a config file, not a request to run sudo
@@ -4657,7 +4848,7 @@ def cmd_chat():
         prompt_with_history = "\n".join(history[-6:])
 
         response = ask_ai_streamed(f"Larp AI ({provider_name})", prompt_with_history,
-                                   extra_web_context=web_ctx)
+                                   extra_web_context=web_ctx, image=pending_image)
         if response:
             history.append(f"Larp AI: {response}")
         else:
@@ -4699,7 +4890,8 @@ def cmd_help():
     print(f"  {PINK}{BOLD}monitor{RESET}              {DIM}Live real-time interactive system dashboard{RESET}")
     print(f"  {PINK}{BOLD}history{RESET}              {DIM}View recent Larp AI prompt & response logs{RESET}")
     print(f"  {PINK}{BOLD}chat{RESET}                 {DIM}Terminal interactive conversation session with Larp AI{RESET}")
-    print(f"  {PINK}{BOLD}why{RESET} {CYAN}<query>{RESET}         {DIM}Query solver using AI [{active_p}] + Live Web Search{RESET}")
+    print(f"  {PINK}{BOLD}why{RESET} {CYAN}<query>{RESET}         {DIM}Query solver using AI [{active_p}] + Live Web Search (--paste to attach a copied image){RESET}")
+    print(f"  {PINK}{BOLD}see{RESET} {CYAN}[question]{RESET}       {DIM}Ask about a copied image or screenshot (--image <file> to read a file){RESET}")
     print(f"  {PINK}{BOLD}fix{RESET}                  {DIM}System log error diagnoser with 1-click Auto-Repair Engine{RESET}")
     print(f"  {PINK}{BOLD}get{RESET} {CYAN}<package>{RESET}        {DIM}Install software pack or recipe from Larp-Repo{RESET}")
     print(f"  {PINK}{BOLD}get-list{RESET}             {DIM}Registry of all available Linux software packs{RESET}")
@@ -4803,14 +4995,130 @@ def cmd_get_create(args: list):
             print("\nCancelled.")
 
 
+# A flag whose value is optional cannot be parsed unambiguously when the rest of
+# the line is free text: in `larp why --image what is this error`, "what" is
+# indistinguishable from a filename. So the clipboard and file cases get separate
+# flags, and --image always consumes exactly one path.
+PASTE_FLAGS = ("--paste", "-p")
+FILE_FLAGS = ("--image", "-i", "--img", "--file")
+
+# Substrings that mark an Ollama model as able to look at pictures. Used only to
+# warn: the request is still sent, since this list cannot know every model.
+VISION_MODEL_HINTS = ("llava", "vision", "vl", "bakllava", "moondream", "minicpm-v", "gemma3")
+
+
+def extract_image_flag(args: list):
+    """Pulls the image flags out of `args`, returning (requested, path, remaining).
+
+    `path` is "" for the clipboard, a filename for a file, or None when the flag
+    was malformed — the caller aborts on None rather than silently eating the
+    first word of the question.
+    """
+    rest = list(args)
+
+    for flag in FILE_FLAGS:
+        if flag not in rest:
+            continue
+        index = rest.index(flag)
+        rest.pop(index)
+        if index >= len(rest):
+            print(f"{RED}[-] {flag} needs a file path. "
+                  f"For a copied image use {BOLD}--paste{RESET}{RED}.{RESET}\n")
+            return (True, None, rest)
+        return (True, rest.pop(index), rest)
+
+    for flag in PASTE_FLAGS:
+        if flag in rest:
+            rest.remove(flag)
+            return (True, "", rest)
+
+    return (False, "", rest)
+
+
+def report_missing_clipboard_image():
+    print(f"{YELLOW}[!] No image on the clipboard.{RESET}")
+    if not clipboard_read_command():
+        tool = "wl-clipboard" if os.environ.get("WAYLAND_DISPLAY") else "xclip"
+        print(f"{CYAN}    No clipboard tool installed — {BOLD}{tool}{RESET}{CYAN} is needed.{RESET}\n")
+    else:
+        print(f"{DIM}    Copy one first (most screenshot tools can copy straight to the "
+              f"clipboard), or pass a file: larp see --image shot.png{RESET}\n")
+
+
+def resolve_image_source(args: list, default_to_clipboard: bool = False):
+    """Splits `args` into (image, remaining_args).
+
+    Returns (None, rest) when no image was asked for, and (False, rest) when one
+    was asked for but could not be read — the caller aborts on False rather than
+    quietly sending a text-only question the user did not ask.
+    """
+    requested, path, rest = extract_image_flag(args)
+    if not requested and not default_to_clipboard:
+        return (None, rest)
+    if path is None:
+        return (False, rest)
+
+    image = load_image_file(path) if path else read_clipboard_image()
+    if not image:
+        if not path:
+            report_missing_clipboard_image()
+        return (False, rest)
+    if not check_image_size(image):
+        return (False, rest)
+    return (image, rest)
+
+
+def cmd_see(args: list):
+    """Asks the AI about an image from the clipboard or a file."""
+    print_banner()
+
+    image, rest = resolve_image_source(args, default_to_clipboard=True)
+    if not image:
+        return
+
+    question = " ".join(rest).strip()
+    if not question:
+        print(f"{CYAN}What would you like to know about this image?{RESET}")
+        try:
+            question = input(" > ").strip()
+        except (KeyboardInterrupt, EOFError):
+            print("\nCancelled.")
+            return
+    if not question:
+        question = "Describe this image. If it shows an error, explain the cause and how to fix it."
+
+    config = load_config()
+    provider = config.get("provider", "ollama")
+    print(f"{DIM}Attached: {describe_image(image)}{RESET}")
+    print(f"{BOLD}{CYAN}Question:{RESET} {question}\n")
+
+    if provider == "ollama":
+        model = config.get("ollama", {}).get("model", "")
+        if not any(tag in model.lower() for tag in VISION_MODEL_HINTS):
+            print(f"{YELLOW}[!] '{model}' is probably text-only and will ignore the image.{RESET}")
+            print(f"{CYAN}    Try a vision model: {BOLD}larp config set ollama.model llama3.2-vision"
+                  f"{RESET}{CYAN} (or llava, qwen2.5vl){RESET}\n")
+
+    ask_ai_streamed(f"Larp AI [{provider.upper()}] — Image", question,
+                    border_color=CYAN, image=image)
+    print()
+
+
 def cmd_why(args: list):
-    if not args:
+    image, rest = resolve_image_source(args)
+    if image is False:
+        return
+
+    if not rest:
         print(f"{YELLOW}[!] Specify a question for larp why.{RESET}")
         print(f"   {DIM}Example: larp why is wayland smooth?{RESET}")
+        print(f"   {DIM}With a pasted screenshot: larp why --paste what does this error mean?{RESET}")
         sys.exit(1)
 
-    question = " ".join(args)
+    question = " ".join(rest)
     print_banner()
+    if image:
+        print(f"{DIM}Attached: {describe_image(image)}{RESET}")
     print(f"{BOLD}{CYAN}Question:{RESET} {question}\n")
 
     print(f"{CYAN}Searching Web & Repositories (DuckDuckGo Search)...{RESET}")
@@ -4819,7 +5127,7 @@ def cmd_why(args: list):
     config = load_config()
     p_name = config.get("provider", "ollama").upper()
     ask_ai_streamed(f"Larp AI [{p_name}] (Web-Search Enabled)", question,
-                    extra_web_context=web_context)
+                    extra_web_context=web_context, image=image)
     print()
 
 
@@ -5011,6 +5319,8 @@ def main():
         cmd_chat()
     elif subcommand == "why":
         cmd_why(args)
+    elif subcommand in ["see", "look", "image", "img"]:
+        cmd_see(args)
     elif subcommand == "fix":
         cmd_fix(args)
     elif subcommand == "get":
