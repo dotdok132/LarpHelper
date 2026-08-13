@@ -674,85 +674,203 @@ def tts_synthesize_and_play(text: str, lang: str = "ru"):
             pass
 
 
-def record_user_speech(duration_sec: int = 4) -> str:
-    """Records microphone audio using arecord or pw-record."""
-    if not shutil.which("arecord") and not shutil.which("pw-record"):
-        print(f"{RED}[-] Error: Audio recording utility (arecord or pw-record) not found.{RESET}")
+def _wav_has_audio(path: str, threshold: int = 300) -> bool:
+    """Returns True if the WAV file contains audio above silence threshold."""
+    try:
+        with open(path, "rb") as f:
+            f.read(44)  # skip WAV header
+            raw = f.read()
+        # sample as signed 16-bit LE
+        import struct
+        samples = struct.unpack(f"<{len(raw)//2}h", raw[:len(raw)//2*2])
+        rms = (sum(s*s for s in samples) / max(1, len(samples))) ** 0.5
+        return rms > threshold
+    except Exception:
+        return True  # assume audio if we can't check
+
+
+def record_user_speech(duration_sec: int = 5) -> str:
+    """Records microphone audio using arecord or pw-record with audio level check."""
+    recorder = shutil.which("arecord") or shutil.which("pw-record")
+    if not recorder:
+        print(f"{RED}[-] Error: No audio recorder found (install alsa-utils: pacman -S alsa-utils){RESET}")
         return ""
 
     if os.path.exists(TMP_AUDIO_INPUT):
         os.remove(TMP_AUDIO_INPUT)
 
-    viz = AudioVisualizer("Listening to microphone... Speak now!")
+    viz = AudioVisualizer("Recording... Speak into your microphone!")
     viz.start()
 
     try:
         if shutil.which("arecord"):
-            cmd = ["arecord", "-d", str(duration_sec), "-f", "S16_LE", "-r", "16000", "-c", "1", TMP_AUDIO_INPUT]
-            subprocess.run(cmd, capture_output=True, text=True, check=False)
-        elif shutil.which("pw-record"):
-            cmd = ["pw-record", "--duration", str(duration_sec), "--rate", "16000", TMP_AUDIO_INPUT]
-            subprocess.run(cmd, capture_output=True, text=True, check=False)
-    except Exception:
-        pass
+            cmd = [
+                "arecord",
+                "-d", str(duration_sec),
+                "-f", "S16_LE",
+                "-r", "16000",
+                "-c", "1",
+                "-q",
+                TMP_AUDIO_INPUT
+            ]
+            subprocess.run(cmd, capture_output=True, check=False)
+        else:
+            cmd = ["pw-record", "--target", "auto", "--rate", "16000", "--channels", "1", TMP_AUDIO_INPUT]
+            proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            time.sleep(duration_sec)
+            proc.terminate()
+            proc.wait()
+    except Exception as e:
+        viz.stop()
+        print(f"\n{RED}[-] Recording error: {e}{RESET}")
+        return ""
 
     viz.stop()
-    return TMP_AUDIO_INPUT if os.path.exists(TMP_AUDIO_INPUT) else ""
+
+    if not os.path.exists(TMP_AUDIO_INPUT):
+        print(f"{RED}[-] WAV file not created. Check microphone permissions.{RESET}")
+        return ""
+
+    file_size = os.path.getsize(TMP_AUDIO_INPUT)
+    if file_size < 1000:
+        print(f"{YELLOW}[!] Captured audio file is too small ({file_size} bytes). Check your microphone.{RESET}")
+        return ""
+
+    if not _wav_has_audio(TMP_AUDIO_INPUT):
+        print(f"{YELLOW}[!] Microphone recorded silence. Is your mic muted or not selected?{RESET}")
+        print(f"{DIM}    Tip: run 'alsamixer' or 'pavucontrol' to check input levels.{RESET}")
+        return ""
+
+    return TMP_AUDIO_INPUT
+
+
+def _detect_stt_engine(config: dict) -> str:
+    """Returns the best available STT engine name for user info display."""
+    vc = config.get("voice", {})
+    groq_key = vc.get("groq_api_key", "").strip()
+    openai_key = config.get("openai", {}).get("api_key", "").strip()
+    if groq_key.startswith("gsk_"):
+        return "Groq Whisper API (online)"
+    if openai_key:
+        return "OpenAI Whisper API (online)"
+    if shutil.which("whisper"):
+        return "Local Whisper CLI (offline)"
+    if shutil.which("whisper-cpp") or shutil.which("whisper.cpp"):
+        return "whisper.cpp (offline)"
+    return ""
 
 
 def transcribe_audio_stt(audio_path: str) -> str:
-    """Transcribes audio file to text using Groq Whisper API, OpenAI Whisper API, or local whisper."""
+    """Transcribes audio file to text.
+    Priority: Groq Whisper API > OpenAI Whisper API > local whisper CLI > whisper.cpp
+    """
     if not audio_path or not os.path.exists(audio_path):
         return ""
 
     config = load_config()
     voice_conf = config.get("voice", {})
-    groq_key = voice_conf.get("groq_api_key", "").strip() or config.get("openai", {}).get("api_key", "").strip()
+    groq_key = voice_conf.get("groq_api_key", "").strip()
+    openai_key = config.get("openai", {}).get("api_key", "").strip()
 
-    if groq_key:
-        try:
-            boundary = "----WebKitFormBoundary7MA4YWxkTrZu0gW"
-            with open(audio_path, "rb") as f:
-                file_bytes = f.read()
+    # --- 1. Groq Whisper API (free tier, fastest) ---
+    if groq_key.startswith("gsk_"):
+        result = _whisper_api_request(
+            audio_path, groq_key,
+            endpoint="https://api.groq.com/openai/v1/audio/transcriptions",
+            model="whisper-large-v3-turbo"
+        )
+        if result is not None:
+            return result
 
-            body = bytearray()
-            body.extend(f"--{boundary}\r\n".encode())
-            body.extend(b'Content-Disposition: form-data; name="model"\r\n\r\nwhisper-1\r\n')
-            body.extend(f"--{boundary}\r\n".encode())
-            body.extend(b'Content-Disposition: form-data; name="file"; filename="audio.wav"\r\n')
-            body.extend(b'Content-Type: audio/wav\r\n\r\n')
-            body.extend(file_bytes)
-            body.extend(b'\r\n')
-            body.extend(f"--{boundary}--\r\n".encode())
+    # --- 2. OpenAI Whisper API ---
+    if openai_key:
+        result = _whisper_api_request(
+            audio_path, openai_key,
+            endpoint="https://api.openai.com/v1/audio/transcriptions",
+            model="whisper-1"
+        )
+        if result is not None:
+            return result
 
-            endpoint = "https://api.openai.com/v1/audio/transcriptions"
-            if groq_key.startswith("gsk_"):
-                endpoint = "https://api.groq.com/openai/v1/audio/transcriptions"
-
-            req = urllib.request.Request(
-                endpoint,
-                data=bytes(body),
-                headers={
-                    "Authorization": f"Bearer {groq_key}",
-                    "Content-Type": f"multipart/form-data; boundary={boundary}"
-                },
-                method="POST"
-            )
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                res_data = json.loads(resp.read().decode("utf-8"))
-                return res_data.get("text", "").strip()
-        except Exception:
-            pass
-
+    # --- 3. Local whisper Python CLI ---
     if shutil.which("whisper"):
         try:
-            res = subprocess.check_output(["whisper", audio_path, "--language", "Russian", "--model", "tiny"], text=True)
-            lines = [l.strip() for l in res.splitlines() if l.strip()]
+            result = subprocess.run(
+                ["whisper", audio_path, "--language", "ru", "--model", "small",
+                 "--output_format", "txt", "--output_dir", "/tmp"],
+                capture_output=True, text=True, timeout=60
+            )
+            txt_file = os.path.join("/tmp", os.path.splitext(os.path.basename(audio_path))[0] + ".txt")
+            if os.path.exists(txt_file):
+                with open(txt_file, "r", encoding="utf-8") as f:
+                    text = f.read().strip()
+                os.remove(txt_file)
+                return text
+            lines = [l.strip() for l in result.stdout.splitlines() if l.strip()]
             return lines[-1] if lines else ""
         except Exception:
             pass
 
+    # --- 4. whisper.cpp binary ---
+    for binary in ["whisper-cpp", "whisper.cpp", "main"]:
+        if shutil.which(binary):
+            model_paths = [
+                os.path.expanduser("~/.local/share/whisper/ggml-small.bin"),
+                "/usr/share/whisper/ggml-small.bin",
+                "/usr/local/share/whisper/ggml-small.bin",
+            ]
+            model_path = next((p for p in model_paths if os.path.exists(p)), None)
+            if model_path:
+                try:
+                    result = subprocess.run(
+                        [binary, "-m", model_path, "-f", audio_path, "-l", "ru", "-otxt"],
+                        capture_output=True, text=True, timeout=30
+                    )
+                    lines = [l.strip() for l in result.stdout.splitlines() if l.strip()]
+                    return lines[-1] if lines else ""
+                except Exception:
+                    pass
+
     return ""
+
+
+def _whisper_api_request(audio_path: str, api_key: str, endpoint: str, model: str) -> "str | None":
+    """Makes a multipart Whisper API transcription request. Returns text or None on failure."""
+    try:
+        boundary = "LarpBoundary" + str(int(time.time()))
+        with open(audio_path, "rb") as f:
+            file_bytes = f.read()
+
+        body = bytearray()
+        body.extend(f"--{boundary}\r\n".encode())
+        body.extend(f'Content-Disposition: form-data; name="model"\r\n\r\n{model}\r\n'.encode())
+        body.extend(f"--{boundary}\r\n".encode())
+        body.extend(b'Content-Disposition: form-data; name="language"\r\n\r\nru\r\n')
+        body.extend(f"--{boundary}\r\n".encode())
+        body.extend(b'Content-Disposition: form-data; name="file"; filename="audio.wav"\r\n')
+        body.extend(b'Content-Type: audio/wav\r\n\r\n')
+        body.extend(file_bytes)
+        body.extend(b'\r\n')
+        body.extend(f"--{boundary}--\r\n".encode())
+
+        req = urllib.request.Request(
+            endpoint,
+            data=bytes(body),
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": f"multipart/form-data; boundary={boundary}"
+            },
+            method="POST"
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            return data.get("text", "").strip()
+    except urllib.error.HTTPError as e:
+        if e.code in (401, 403):
+            pass  # bad key, try next provider
+    except Exception:
+        pass
+    return None
 
 
 # =============================================================================
@@ -762,36 +880,67 @@ def transcribe_audio_stt(audio_path: str) -> str:
 def cmd_talk():
     """Continuous hands-free interactive voice loop."""
     print_banner()
-    print_box("Larp AI Voice Assistant", f"{PINK}Hands-free Voice Session Active!{RESET}\n{CYAN}Speak into your microphone. Say 'exit' or press Ctrl+C to leave.{RESET}")
-    print()
 
     config = load_config()
+    stt_engine = _detect_stt_engine(config)
+
+    if not stt_engine:
+        print_box(
+            "Voice Assistant — Setup Required",
+            f"{YELLOW}No speech-to-text (STT) engine is configured!{RESET}\n\n"
+            f"{CYAN}To enable voice transcription, choose one of:\n{RESET}"
+            f"  {PINK}1. Groq Whisper API (FREE, fastest):{RESET}\n"
+            f"     Get key at groq.com -> {BOLD}larp config{RESET} -> option 4\n"
+            f"     Set: config set voice.groq_api_key gsk_XXXX\n\n"
+            f"  {PINK}2. Local Whisper CLI (offline, no key needed):{RESET}\n"
+            f"     {BOLD}pip install openai-whisper{RESET}\n\n"
+            f"  {PINK}3. OpenAI Whisper API:{RESET}\n"
+            f"     {BOLD}larp config{RESET} -> option 4 -> enter OpenAI key\n\n"
+            f"{DIM}Running in text-only chat mode instead.{RESET}",
+            border_color=YELLOW
+        )
+        print()
+        # Fallback: run normal text chat
+        cmd_chat()
+        return
+
+    print_box(
+        "Larp AI Voice Assistant",
+        f"{PINK}Hands-free Voice Session Active! (^_^){RESET}\n"
+        f"{CYAN}STT Engine:{RESET} {GREEN}{stt_engine}{RESET}\n"
+        f"{CYAN}Speak into your microphone. Say 'exit' or Ctrl+C to leave.{RESET}"
+    )
+    print()
 
     while True:
         try:
-            print(f"\n{BOLD}{PINK}Listening...{RESET}")
-            audio_file = record_user_speech(duration_sec=4)
+            print(f"\n{BOLD}{PINK}>>> Recording 5s...{RESET} {DIM}(speak now){RESET}")
+            audio_file = record_user_speech(duration_sec=5)
             if not audio_file:
-                print(f"{YELLOW}[!] Microphone input failed.{RESET}")
-                break
-
-            print(f"{CYAN}Transcribing voice...{RESET}")
-            user_text = transcribe_audio_stt(audio_file)
-
-            if not user_text:
+                # Microphone problem — let user type
                 try:
-                    user_text = input(f"{PINK}{BOLD}Speech not captured. Type command (or Enter to listen again): {RESET}").strip()
+                    user_text = input(f"{PINK}{BOLD}No audio captured. Type query (or Enter to retry): {RESET}").strip()
+                    if not user_text:
+                        continue
                 except (KeyboardInterrupt, EOFError):
                     break
+            else:
+                print(f"{CYAN}Transcribing...{RESET}")
+                user_text = transcribe_audio_stt(audio_file)
 
-            if not user_text:
-                continue
+                if not user_text:
+                    try:
+                        user_text = input(f"{PINK}{BOLD}Could not understand. Type query (or Enter to retry): {RESET}").strip()
+                        if not user_text:
+                            continue
+                    except (KeyboardInterrupt, EOFError):
+                        break
 
-            print(f"\n{BOLD}{CYAN}You (Voice):{RESET} {user_text}")
+            print(f"\n{BOLD}{CYAN}You:{RESET} {user_text}")
 
-            if user_text.lower() in ["exit", "quit", "пока", "выход"]:
-                print(f"{CYAN}Goodbye!{RESET}")
+            if user_text.lower() in ["exit", "quit", "пока", "выход", "стоп"]:
                 tts_synthesize_and_play("До свидания! Хорошего дня!")
+                print(f"{CYAN}Goodbye! (^_^){RESET}")
                 break
 
             response = ask_ai(user_text)
