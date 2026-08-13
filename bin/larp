@@ -186,6 +186,83 @@ class Spinner:
         self.thread = None
 
 
+_HUD_LAST_USER = ""
+_HUD_LAST_AI = ""
+_HUD_FULL_SCREEN = False
+
+
+def _render_talk_hud(status_tag: str, title: str, user_text: str = "", ai_text: str = "", level: float = 0.0, step: int = 0):
+    """Renders a full-console Cyberpunk TUI Studio HUD / Visualizer Canvas for larp talk."""
+    cols, lines = shutil.get_terminal_size((80, 24))
+    cols = max(64, cols)
+
+    header = " LARP LINUX — UNIVERSAL AI VOICE COMPANION v4.1.0 "
+    header_line = f"┌─{header}─{'─' * max(0, cols - len(header) - 5)}┐"
+
+    kaomojis = ["(^_^) ", "(^O^) ", "(^_-) ", "(^o^) ", "(^_~) "]
+    listening_faces = ["(o_o)", "(•_•)", "(O_O)", "(^o^)", "(^_^)"]
+
+    if "SPEAK" in status_tag:
+        face = kaomojis[(step // 2) % len(kaomojis)]
+    elif "REC" in status_tag or "LISTEN" in status_tag:
+        face = listening_faces[(step // 2) % len(listening_faces)] if level > 0.08 else "(o_o)"
+    elif "THINK" in status_tag or "TRANSCRIB" in status_tag or "STT" in status_tag:
+        face = "(.. )" if (step // 3) % 2 == 0 else "( ..)"
+    else:
+        face = "(^_^) "
+
+    wave_chars = [" ", " ", "▂", "▃", "▄", "▅", "▆", "▇", "█"]
+    num_bars = min(36, cols - 24)
+    bar_list = []
+
+    if "SPEAK" in status_tag:
+        for i in range(num_bars):
+            val = int(3.5 + 3.5 * math.sin(step * 0.4 + i * 0.3))
+            bar_list.append(wave_chars[max(0, min(7, val))])
+    elif "REC" in status_tag or "LISTEN" in status_tag:
+        base_idx = int(level * 7)
+        for i in range(num_bars):
+            var = math.sin(step * 0.5 + i * 0.4) * 0.35 + 0.65
+            idx = max(0, min(7, int(base_idx * var * 2.5)))
+            if level < 0.05:
+                idx = 0 if (i + step) % 6 != 0 else 1
+            bar_list.append(wave_chars[idx])
+    elif "THINK" in status_tag or "STT" in status_tag or "TRANSCRIB" in status_tag:
+        for i in range(num_bars):
+            val = int(3.5 + 3.5 * math.sin(step * 0.6 + i * 0.5))
+            bar_list.append(wave_chars[max(0, min(7, val))])
+    else:
+        bar_list = ["▂"] * num_bars
+
+    wave_str = "".join(bar_list)
+
+    sys.stdout.write("\033[H\033[J")
+    sys.stdout.write(f"{PINK}{BOLD}{header_line}{RESET}\n")
+
+    box_w = cols - 4
+    pad_title = title.center(box_w)
+    pad_face = f"Larp Voice Core:  {face}".center(box_w)
+    pad_wave = f"[{wave_str}]".center(box_w)
+
+    status_color = GREEN if "REC" in status_tag or "LISTEN" in status_tag else YELLOW if "THINK" in status_tag or "STT" in status_tag else PINK
+
+    sys.stdout.write(f"{PINK}│{RESET} {status_color}{BOLD}{pad_title}{RESET} {PINK}│{RESET}\n")
+    sys.stdout.write(f"{PINK}│{RESET} {CYAN}{BOLD}{pad_face}{RESET} {PINK}│{RESET}\n")
+    sys.stdout.write(f"{PINK}│{RESET} {PINK}{pad_wave}{RESET} {PINK}│{RESET}\n")
+    sys.stdout.write(f"{PINK}├{'─' * (cols - 2)}┤{RESET}\n")
+
+    u_disp = (user_text[:cols - 16] + "...") if len(user_text) > cols - 16 else (user_text or "(listening...)")
+    ai_disp = (ai_text[:cols - 16] + "...") if len(ai_text) > cols - 16 else (ai_text or "(waiting for query...)")
+
+    u_line = f" You:  {u_disp}"
+    ai_line = f" Larp: {ai_disp}"
+
+    sys.stdout.write(f"{PINK}│{RESET} {CYAN}{BOLD}{u_line:<{cols-4}}{RESET} {PINK}│{RESET}\n")
+    sys.stdout.write(f"{PINK}│{RESET} {PINK}{BOLD}{ai_line:<{cols-4}}{RESET} {PINK}│{RESET}\n")
+    sys.stdout.write(f"{PINK}└{'─' * (cols - 2)}┘{RESET}\n")
+    sys.stdout.flush()
+
+
 class AudioVisualizer:
     """Console TUI Oscilloscope audio visualizer banner with real-time level meter and kaomojis."""
     def __init__(self, title="Listening to microphone..."):
@@ -209,28 +286,31 @@ class AudioVisualizer:
         step = 0
         while self.running:
             step += 1
-            num_bars = 20
+            if _HUD_FULL_SCREEN:
+                _render_talk_hud("[REC]", self.title, _HUD_LAST_USER, _HUD_LAST_AI, level=self.level, step=step)
+            else:
+                num_bars = 20
+                base_idx = int(self.level * (len(wave_chars) - 1))
+                bar_list = []
+                for i in range(num_bars):
+                    var = math.sin(step * 0.5 + i * 0.4) * 0.35 + 0.65
+                    idx = max(0, min(len(wave_chars) - 1, int(base_idx * var * 2.5)))
+                    if self.level < 0.05:
+                        idx = 0 if (i + step) % 6 != 0 else 1
+                    bar_list.append(wave_chars[idx])
 
-            base_idx = int(self.level * (len(wave_chars) - 1))
-            bar_list = []
-            for i in range(num_bars):
-                var = math.sin(step * 0.5 + i * 0.4) * 0.35 + 0.65
-                idx = max(0, min(len(wave_chars) - 1, int(base_idx * var * 2.5)))
-                if self.level < 0.05:
-                    idx = 0 if (i + step) % 6 != 0 else 1
-                bar_list.append(wave_chars[idx])
+                meter = "".join(bar_list)
+                face = listening_faces[(step // 2) % len(listening_faces)] if self.level > 0.08 else "(o_o)"
+                status_tag = "[REC]" if "RECORD" in self.status else "[STT]" if "TRANSCRIB" in self.status else "[MIC]"
+                color = PINK if self.level > 0.1 else CYAN
 
-            meter = "".join(bar_list)
-            face = listening_faces[(step // 2) % len(listening_faces)] if self.level > 0.08 else "(o_o)"
-            status_tag = "[REC]" if "RECORD" in self.status else "[STT]" if "TRANSCRIB" in self.status else "[MIC]"
-            color = PINK if self.level > 0.1 else CYAN
-
-            sys.stdout.write(f"\r{color}{BOLD} {status_tag} {face}{RESET} {PINK}[{meter}]{RESET} {BOLD}{self.title}{RESET} {DIM}(Ctrl+C to stop){RESET}   ")
-            sys.stdout.flush()
+                sys.stdout.write(f"\r{color}{BOLD} {status_tag} {face}{RESET} {PINK}[{meter}]{RESET} {BOLD}{self.title}{RESET} {DIM}(Ctrl+C to stop){RESET}   ")
+                sys.stdout.flush()
             time.sleep(0.06)
 
-        sys.stdout.write("\r\033[K")
-        sys.stdout.flush()
+        if not _HUD_FULL_SCREEN:
+            sys.stdout.write("\r\033[K")
+            sys.stdout.flush()
 
     def start(self):
         self.running = True
@@ -747,23 +827,27 @@ def _play_audio_with_speaking_animation(audio_path: str):
 
         while proc.poll() is None:
             t = time.time() - start_t
-            face = faces[frame % len(faces)]
-
-            eq_bars = []
-            for i in range(24):
-                val = int(3.5 + 3.5 * math.sin(t * 14 + i * 0.4))
-                val = max(0, min(7, val))
-                eq_bars.append(bars[val])
-
-            wave = "".join(eq_bars)
-            color = PINK if (frame // 3) % 2 == 0 else CYAN
-            sys.stdout.write(f"\r{color}{BOLD} Speaker Active {face}{RESET} {PINK}[{wave}]{RESET}  ")
-            sys.stdout.flush()
-            time.sleep(0.05)
             frame += 1
 
-        sys.stdout.write("\r\033[K")
-        sys.stdout.flush()
+            if _HUD_FULL_SCREEN:
+                _render_talk_hud("[SPEAK]", "Larp Speaking...", _HUD_LAST_USER, _HUD_LAST_AI, level=1.0, step=frame)
+            else:
+                face = faces[frame % len(faces)]
+                eq_bars = []
+                for i in range(24):
+                    val = int(3.5 + 3.5 * math.sin(t * 14 + i * 0.4))
+                    val = max(0, min(7, val))
+                    eq_bars.append(bars[val])
+
+                wave = "".join(eq_bars)
+                color = PINK if (frame // 3) % 2 == 0 else CYAN
+                sys.stdout.write(f"\r{color}{BOLD} Speaker Active {face}{RESET} {PINK}[{wave}]{RESET}  ")
+                sys.stdout.flush()
+            time.sleep(0.05)
+
+        if not _HUD_FULL_SCREEN:
+            sys.stdout.write("\r\033[K")
+            sys.stdout.flush()
     except Exception:
         pass
 
@@ -1367,7 +1451,8 @@ def _setup_voice_engine_installer(config: dict):
 
 
 def cmd_talk():
-    """Continuous hands-free interactive voice loop."""
+    """Continuous hands-free interactive voice loop with full-console TUI Studio HUD."""
+    global _HUD_FULL_SCREEN, _HUD_LAST_USER, _HUD_LAST_AI
     print_banner()
 
     config = load_config()
@@ -1391,62 +1476,66 @@ def cmd_talk():
         cmd_chat()
         return
 
-    vc = config.get("voice", {})
-    auto_stop = vc.get("auto_stop_silence", True)
+    _HUD_FULL_SCREEN = True
+    _HUD_LAST_USER = ""
+    _HUD_LAST_AI = ""
 
-    print_box(
-        "Larp AI Voice Assistant",
-        f"{PINK}Hands-free Voice Session Active! (^_^){RESET}\n"
-        f"{CYAN}STT Engine:{RESET}   {GREEN}{stt_engine}{RESET}\n"
-        f"{CYAN}VAD Mode:{RESET}     {GREEN}{'Auto-Stop on 1.1s Silence' if auto_stop else 'Fixed Duration'}{RESET}\n"
-        f"{CYAN}Speak into your microphone. Say 'exit' or Ctrl+C to leave.{RESET}"
-    )
-    print()
-
-    while True:
-        try:
-            print(f"\n{BOLD}{PINK}>>> Listening...{RESET} {DIM}(speak now){RESET}")
+    try:
+        while True:
+            _render_talk_hud("[REC]", "LISTENING (Speak into microphone...)", _HUD_LAST_USER, _HUD_LAST_AI)
             audio_file = record_user_speech()
+
             if not audio_file:
+                _HUD_FULL_SCREEN = False
                 try:
                     user_text = input(f"{PINK}{BOLD}No audio captured. Type query (or Enter to retry): {RESET}").strip()
                     if not user_text:
+                        _HUD_FULL_SCREEN = True
                         continue
                 except (KeyboardInterrupt, EOFError):
                     break
+                _HUD_FULL_SCREEN = True
             else:
-                print(f"{CYAN}Transcribing...{RESET}")
+                _render_talk_hud("[STT]", "TRANSCRIBING SPEECH (Whisper)...", _HUD_LAST_USER, _HUD_LAST_AI)
                 user_text = transcribe_audio_stt(audio_file)
 
                 if not user_text:
+                    _HUD_FULL_SCREEN = False
                     try:
                         user_text = input(f"{PINK}{BOLD}Could not understand speech. Type query (or Enter to retry): {RESET}").strip()
                         if not user_text:
+                            _HUD_FULL_SCREEN = True
                             continue
                     except (KeyboardInterrupt, EOFError):
                         break
+                    _HUD_FULL_SCREEN = True
 
-            print(f"\n{BOLD}{CYAN}You:{RESET} {user_text}")
-
+            _HUD_LAST_USER = user_text
             if user_text.lower() in ["exit", "quit", "пока", "выход", "стоп"]:
-                tts_synthesize_and_play("До свидания! Хорошего дня!")
-                print(f"{CYAN}Goodbye! (^_^){RESET}")
+                _HUD_LAST_AI = "До свидания! Хорошего дня!"
+                _render_talk_hud("[SPEAK]", "GOODBYE!", _HUD_LAST_USER, _HUD_LAST_AI)
+                tts_synthesize_and_play(_HUD_LAST_AI)
                 break
 
+            _render_talk_hud("[THINK]", "THINKING (Larp AI is generating response...)", _HUD_LAST_USER, _HUD_LAST_AI)
             voice_prompt = (
                 f"{user_text}\n\n"
                 "[Инструкция голосового ответа: Отвечай максимально кратко, в 1-2 предложениях, "
                 "по существу. НЕ ИСПОЛЬЗУЙ никаких смайлов, эмодзи и каомодзи!]"
             )
             response = ask_ai(voice_prompt)
-            p_name = config.get("provider", "ollama").upper()
-            print_box(f"Larp AI ({p_name})", response, border_color=PINK)
+            _HUD_LAST_AI = response
 
+            _render_talk_hud("[SPEAK]", "SPEAKING RESPONSE...", _HUD_LAST_USER, _HUD_LAST_AI)
             tts_synthesize_and_play(response, lang="ru")
 
-        except (KeyboardInterrupt, EOFError):
-            print(f"\n{CYAN}Exiting voice session. Bye! (^_^){RESET}")
-            break
+    except (KeyboardInterrupt, EOFError):
+        pass
+    finally:
+        _HUD_FULL_SCREEN = False
+        sys.stdout.write("\033[H\033[J")
+        sys.stdout.flush()
+        print(f"\n{CYAN}Exited voice session. Bye! (^_^){RESET}\n")
 
 
 def cmd_listen(args: list):
