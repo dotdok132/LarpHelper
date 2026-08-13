@@ -1,10 +1,10 @@
 # 🌸 LarpLinux Supreme AI Companion (`larp`)
 
-> **Next-Generation Autonomous AI Companion and System Automation Engine for any Linux distribution.**
+> **Next-Generation Autonomous AI Companion, Hands-Free Voice Assistant, and System Automation Engine for any Linux distribution.**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-f5a9b8.svg)](LICENSE)
 [![Python Version](https://img.shields.io/badge/Python-3.8%2B-5bcefa.svg)](https://python.org)
-[![Platform](https://img.shields.io/badge/Platform-Linux%20(any%20distro%20%7C%20any%20init)-purple.svg)]()
+[![Platform](https://img.shields.io/badge/Platform-Linux%20(Arch%20%7C%20Void%20%7C%20Debian%20%7C%20Fedora%20%7C%20Alpine)-purple.svg)]()
 [![Zero Dependencies](https://img.shields.io/badge/Dependencies-Standard%20Library%20Only-green.svg)]()
 
 ```text
@@ -17,14 +17,17 @@
 
 ## ✨ Key Features
 
-- **🌸 Zero Dependencies**: Built strictly using standard Python 3.8+ libraries (`urllib`, `json`, `subprocess`, `sys`). No `pip install` required!
+- **🌸 Zero Dependencies**: Built strictly using standard Python 3.8+ libraries (`urllib`, `json`, `subprocess`, `sys`, `math`, `shlex`). No `pip install` required!
+- **🎙️ Hands-Free Full-Console Voice Assistant (`larp talk`)**: Interactive voice session with VAD silence auto-stop (1.1s), live mic level meter, and a **Full-Console 2D Cyberpunk Studio HUD visualizer canvas** filling all terminal rows and columns.
+- **🗣️ High-Quality Neural TTS & Audio Mastering**: Supports **RHVoice** (offline natural Russian voices: Elena, Aleksandr), **OpenAI Neural Speech API** (`nova`, `shimmer`, `alloy`), **Piper Neural TTS**, and **Google Translate TTS** with FFmpeg vocal mastering filters (`atempo`, highpass/lowpass, volume compressor).
+- **🧠 Multilingual STT with Auto-Language Detection**: Local offline **Whisper** module (`tiny`, `base`, `small`, `medium`) with 99+ language auto-detection and fallback to Groq/OpenAI Whisper API.
+- **📦 Multi-Distro Voice Auto-Installer**: 1-click voice wizard (`larp voice setup`) with package manager detection across **Arch Linux** (`pacman`), **Void Linux** (`xbps`), **Debian/Ubuntu** (`apt`), **Fedora** (`dnf`), **Alpine** (`apk`), **Solus** (`eopkg`), **openSUSE** (`zypper`), and **Gentoo** (`emerge`).
 - **🤖 Universal AI Engine**: Native support for **Ollama** (local VRAM-saver engine with `keep_alive: 0`), **OpenRouter** (one API key for ~400 models — Claude, Gemini, GPT, Llama and more), **Google Gemini API** (with dynamic model auto-discovery), **Anthropic Claude API**, and **OpenAI ChatGPT API**.
 - **⚡ Integrated OS Modules**: Includes terminal copilot (`larp do`), log auto-repair engine (`larp fix`), system informer (`larp fetch`), benchmark (`larp bench`), translator (`larp translate`), cleanup wizard (`larp clean`), and package architect (`larp get-create`).
 - **💬 Live Streaming Answers**: `larp why`, `larp chat`, `larp code` and `larp translate` print the answer as the model writes it, so a slow local model shows progress instead of a spinner.
-- **🌸 Truecolor Glassmorphic UI**: Truecolor pastel-pink (`#F5A9B8`) and cyan (`#5BCEFA`) console palette with clean borders and emoji-free aesthetics.
+- **🌸 Truecolor Glassmorphic UI**: Truecolor pastel-pink (`#F5A9B8`) and cyan (`#5BCEFA`) console palette with clean borders and emoji-free ASCII kaomoji aesthetics.
 - **🛡️ Terminal Kaomoji Persona**: Cute, enthusiastic AI companion persona (`(^--^)`, `(=^.^=)`, `\(^o^)/`) configured with safe console ASCII kaomoji that render cleanly in any Linux terminal without broken font boxes.
 - **🛠️ Auto-Repair Engine**: Scans system logs (`journalctl -p 3`), synthesizes exact root causes, and proposes a single-line resolution pipeline.
-- **🛡️ Guarded Execution**: A generated command is only offered for execution when it is a real command — prose, explanations and malformed quoting are rejected rather than "repaired", and destructive patterns (`rm -rf /`, `mkfs`, `dd of=/dev/…`) require typing `I UNDERSTAND`, even with auto-repair on.
 
 ---
 
@@ -51,17 +54,23 @@ chmod +x install.sh
 
 | Command | Description |
 |---|---|
+| `larp talk` | Full-Console 2D Studio TUI Voice Assistant session (hands-free mic & speaker) |
+| `larp listen [sec]` | Single voice query recorder and AI voice responder |
+| `larp speak <text>` | Synthesize and play text audio with real-time speech visualizer |
+| `larp voice` | Voice Assistant diagnostic dashboard & setup wizard |
+| `larp voice setup` | Multi-distro interactive Voice Engine installer (RHVoice, Piper, OpenAI) |
+| `larp voice test` | Interactive 4-step diagnostic test (mic, playback, STT, TTS) |
 | `larp fetch` | Aesthetic system informer (Larp Neofetch replacement) |
 | `larp do <task>` | Autonomous AI terminal copilot — translates tasks into shell pipelines |
 | `larp code <task>` | AI Code and script generator with syntax block formatting |
 | `larp translate <text>` | Instant AI multilingual translator (RU ↔ EN) |
-| `larp config` | Interactive step-by-step TUI settings menu |
+| `larp config` | Categorized Master Control Center TUI Hub settings menu |
 | `larp config models [text]` | Browse OpenRouter model IDs, optionally filtered |
 | `larp fallback` | Manage the provider fallback chain (add / remove / clear) |
 | `larp clean` | Disk cleanup wizard — package cache, logs & orphans (any package manager) |
 | `larp backup` | Snapshot & config backup manager (`~/.config/larp`, `niri`, `fwm`, `waybar`, `kitty`) |
 | `larp restore [archive]` | Restore configuration from a backup archive |
-| `larp alias` | Installs short terminal shortcuts (`l`, `ld`, `lw`, `lc`, `lg`, `lf`) into your login shell's rc file (bash, zsh, ksh or fish) |
+| `larp alias` | Installs short terminal shortcuts (`l`, `ld`, `lw`, `lc`, `lg`, `lf`) into shell rc |
 | `larp bench` | Speedtest and latency benchmark for all AI providers |
 | `larp status` | Real-time system radar — CPU/RAM/Disk loads & active AI engine |
 | `larp monitor` | Interactive real-time system monitoring dashboard |
@@ -77,9 +86,28 @@ chmod +x install.sh
 
 ---
 
-## ⚙️ Configuration & TUI
+## 🎙️ Voice Assistant Subsystem
 
-Launch the interactive configuration menu:
+`larp` comes equipped with a complete hands-free Voice Assistant capable of running offline locally or in the cloud:
+
+```bash
+larp talk                      # Start interactive voice session with full-console 2D HUD
+larp speak "Привет! Как дела?" # Speech output with real-time waveform visualizer
+larp voice setup               # Auto-install RHVoice, Piper or configure OpenAI / Groq keys
+larp voice test                # Full audio & speech recognition hardware diagnostic test
+```
+
+### Supported Voice Engines (TTS)
+- **RHVoice (Elena / Aleksandr)**: High-quality natural offline Russian speech synthesizer (`sudo pacman -S rhvoice rhvoice-voice-elena` / `sudo xbps-install -Sy RHVoice`).
+- **OpenAI Neural Speech (`nova` / `shimmer` / `alloy`)**: Studio-quality human voice synthesis.
+- **Piper Neural TTS**: Lightweight local neural voice engine.
+- **Google Neural TTS**: Mastered with FFmpeg tempo, EQ, and dynamic volume compression filters.
+
+---
+
+## ⚙️ Configuration & Master Control Hub
+
+Launch the categorized TUI Master Control Center:
 
 ```bash
 larp config
@@ -89,94 +117,22 @@ Or set options directly via command line:
 
 ```bash
 larp config set provider gemini
-larp config set gemini.api_key "YOUR_GEMINI_API_KEY"
+larp config set voice.tts_engine rhvoice
+larp config set voice.rhvoice_voice Elena
 larp config set auto_fix true
 ```
-
-### Using OpenRouter
-
-OpenRouter gives you Claude, Gemini, GPT, Llama and ~400 other models through a
-single API key, so you don't need to register with each provider separately:
-
-```bash
-larp config set provider openrouter
-larp config set openrouter.api_key "YOUR_OPENROUTER_KEY"
-```
-
-Model IDs are namespaced (`anthropic/claude-sonnet-5`, `google/gemini-2.5-flash`,
-`meta-llama/llama-3.3-70b-instruct`). Browse and filter the list, then pick one:
-
-```bash
-larp config models              # every available model
-larp config models gemini       # only models matching "gemini"
-larp config set openrouter.model google/gemini-2.5-flash
-```
-
-Get a key at [openrouter.ai/keys](https://openrouter.ai/keys). The default model is
-`anthropic/claude-sonnet-5`.
-
----
-
-## 🔁 Provider Fallback
-
-When a provider fails — rate limit, expired key, service outage, anything — larp
-can retry the request on the next provider in a chain instead of giving up:
-
-```bash
-larp fallback add openrouter anthropic/claude-sonnet-5
-larp fallback add ollama
-larp fallback                 # show the order
-larp fallback remove 2
-larp fallback clear
-```
-
-The active provider is always tried first, so the chain is purely additive. Each
-entry is a provider with an optional model, which means the same provider can
-appear more than once with different models — the typical setup being a free
-model first and a paid one behind it:
-
-```
-1. openrouter/google/gemma-4-26b-a4b-it:free   (active provider)
-2. openrouter/anthropic/claude-sonnet-5
-```
-
-Fallback is **off by default**: switching automatically can move a free-model
-workload onto a paid one, so it is opt-in. When a handoff happens larp says so,
-and names the provider that actually answered.
-
----
-
-## 💾 Backup & restore
-
-`larp backup` archives `~/.config/larp` together with your `niri`, `fwm`,
-`waybar` and `kitty` configuration. The archive contains `config.json` and
-therefore your **API keys**, so it is created with `0600` permissions inside a
-`0700` directory, and the ten most recent archives are kept:
-
-```bash
-larp backup                                        # create
-larp restore                                       # pick one from a list
-larp restore larp-config-backup-20260813_1154.tar.gz
-```
-
-Restoring refuses archive members with absolute paths, `..` components or
-symlinks pointing outside `~/.config`.
 
 ---
 
 ## 🧪 Running the tests
 
-The suite uses only the standard library, like larp itself — no pytest, no
-`pip install`:
+The suite uses only the standard library, like larp itself — no pytest, no `pip install`:
 
 ```bash
 python3 -m unittest discover -s tests -v
 ```
 
-Tests for optional features are skipped when the feature is absent, so the suite
-runs unchanged on any branch. CI runs the same suite on Python 3.8, 3.11 and
-3.13, lints the installer scripts with `shellcheck`, and smoke-tests the
-commands that must work without a provider or a network connection.
+CI runs the same suite on Python 3.8, 3.11 and 3.13, lints the installer scripts with `shellcheck`, and smoke-tests all commands.
 
 ---
 
