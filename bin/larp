@@ -187,7 +187,7 @@ class Spinner:
 
 
 class AudioVisualizer:
-    """Console TUI Oscilloscope audio visualizer banner with real-time level meter."""
+    """Console TUI Oscilloscope audio visualizer banner with real-time level meter and kaomojis."""
     def __init__(self, title="Listening to microphone..."):
         self.title = title
         self.running = False
@@ -205,26 +205,31 @@ class AudioVisualizer:
 
     def _visualize(self):
         wave_chars = [" ", " ", "▂", "▃", "▄", "▅", "▆", "▇", "█"]
+        listening_faces = ["(o_o)", "(•_•)", "(O_O)", "(^o^)", "(^_^)"]
         step = 0
         while self.running:
             step += 1
-            num_bars = 14
-            max_idx = int(self.level * (len(wave_chars) - 1))
+            num_bars = 20
+
+            base_idx = int(self.level * (len(wave_chars) - 1))
             bar_list = []
             for i in range(num_bars):
-                var = math.sin(step * 0.4 + i * 0.5) * 0.3 + 0.7
-                idx = max(0, min(len(wave_chars) - 1, int(max_idx * var)))
-                if self.level < 0.04:
-                    idx = 0 if (i + step) % 5 != 0 else 1
+                var = math.sin(step * 0.5 + i * 0.4) * 0.35 + 0.65
+                idx = max(0, min(len(wave_chars) - 1, int(base_idx * var * 2.5)))
+                if self.level < 0.05:
+                    idx = 0 if (i + step) % 6 != 0 else 1
                 bar_list.append(wave_chars[idx])
-            
+
             meter = "".join(bar_list)
-            icon = "🎙️" if "RECORD" in self.status else "⚡" if "TRANSCRIB" in self.status else "🔊"
-            sys.stdout.write(f"\r{PINK}  {icon} [{CYAN}{meter}{PINK}] {BOLD}{self.title}{RESET} {DIM}(Ctrl+C to stop){RESET}   ")
+            face = listening_faces[(step // 2) % len(listening_faces)] if self.level > 0.08 else "(o_o)"
+            status_tag = "[REC]" if "RECORD" in self.status else "[STT]" if "TRANSCRIB" in self.status else "[MIC]"
+            color = PINK if self.level > 0.1 else CYAN
+
+            sys.stdout.write(f"\r{color}{BOLD} {status_tag} {face}{RESET} {PINK}[{meter}]{RESET} {BOLD}{self.title}{RESET} {DIM}(Ctrl+C to stop){RESET}   ")
             sys.stdout.flush()
-            time.sleep(0.08)
-        
-        sys.stdout.write(f"\r{' ' * 75}\r")
+            time.sleep(0.06)
+
+        sys.stdout.write("\r\033[K")
         sys.stdout.flush()
 
     def start(self):
