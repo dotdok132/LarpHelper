@@ -1,0 +1,69 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  tests:
+    name: tests (python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.8 is the floor advertised in the README; the newest release guards
+        # against deprecations (tarfile extraction filters, for example).
+        python-version: ["3.8", "3.11", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Byte-compile the CLI
+        run: python -m py_compile bin/larp
+
+      - name: Run the test suite
+        run: python -m unittest discover -s tests -v
+
+  shell:
+    name: shellcheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install shellcheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+
+      - name: Lint the installer scripts
+        run: shellcheck install.sh uninstall.sh
+
+  smoke:
+    name: cli smoke test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # The commands that must never need a provider or a network connection.
+      - name: Run offline commands
+        run: |
+          python bin/larp version
+          python bin/larp help
+          python bin/larp fetch
+          python bin/larp status
+          python bin/larp get-list
+          python bin/larp fallback show
+
+      - name: Unknown command exits non-zero
+        run: |
+          if python bin/larp definitely-not-a-command > /dev/null 2>&1; then
+            echo "expected a non-zero exit status"
+            exit 1
+          fi
