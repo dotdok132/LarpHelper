@@ -962,9 +962,11 @@ def transcribe_audio_stt(audio_path: str) -> str:
 
     # --- 3. Direct Python whisper module (multilingual) ---
     try:
+        import warnings
+        warnings.filterwarnings("ignore")
         import whisper
         m = whisper.load_model(whisper_model)
-        res = m.transcribe(audio_path)
+        res = m.transcribe(audio_path, fp16=False)
         text = res.get("text", "").strip()
         if text:
             return text
@@ -1248,7 +1250,12 @@ def cmd_talk():
                 print(f"{CYAN}Goodbye! (^_^){RESET}")
                 break
 
-            response = ask_ai(user_text)
+            voice_prompt = (
+                f"{user_text}\n\n"
+                "[Инструкция голосового ответа: Отвечай максимально кратко, в 1-2 предложениях, "
+                "по существу. НЕ ИСПОЛЬЗУЙ никаких смайлов, эмодзи и каомодзи!]"
+            )
+            response = ask_ai(voice_prompt)
             p_name = config.get("provider", "ollama").upper()
             print_box(f"Larp AI ({p_name})", response, border_color=PINK)
 
@@ -1275,7 +1282,12 @@ def cmd_listen(args: list):
         return
 
     print(f"{BOLD}{CYAN}Transcribed Query:{RESET} {text}\n")
-    response = ask_ai(text)
+    voice_prompt = (
+        f"{text}\n\n"
+        "[Инструкция голосового ответа: Отвечай максимально кратко, в 1-2 предложениях, "
+        "по существу. НЕ ИСПОЛЬЗУЙ никаких смайлов, эмодзи и каомодзи!]"
+    )
+    response = ask_ai(voice_prompt)
     print_box("Larp AI Response", response, border_color=PINK)
     tts_synthesize_and_play(response)
 
