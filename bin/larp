@@ -693,25 +693,76 @@ def extract_single_command(response: str) -> str:
     return ""
 
 
+def resolve_binary(name: str) -> str:
+    """Finds an executable by name with case-insensitive search fallback on PATH."""
+    if not name:
+        return ""
+    p = shutil.which(name)
+    if p:
+        return p
+    for d in os.environ.get("PATH", "").split(":"):
+        if d and os.path.isdir(d):
+            try:
+                for fname in os.listdir(d):
+                    if fname.lower() == name.lower():
+                        return os.path.join(d, fname)
+            except Exception:
+                pass
+    return ""
+
+
+APP_KEYWORDS = {
+    ("телеграм", "телеграмм", "теграмм", "тг", "telegram"): ["Telegram", "telegram-desktop", "ayugram-desktop"],
+    ("браузер", "хром", "chrome", "google-chrome", "browser"): ["google-chrome-stable", "firefox", "zen-browser", "chromium"],
+    ("файрфокс", "фаерфокс", "мозилла", "firefox"): ["firefox"],
+    ("дискорд", "вескоп", "вескод", "vesktop", "discord"): ["vesktop", "discord"],
+    ("терминал", "консоль", "китти", "kitty"): ["kitty", "alacritty", "foot", "konsole"],
+    ("стим", "steam"): ["steam"],
+    ("код", "вскод", "vscode", "code"): ["code", "vscodium", "zed"],
+}
+
+
+def resolve_voice_intent_command(user_speech: str, ai_response: str = "") -> str:
+    """Extracts or resolves runnable shell command from AI response or direct speech intent."""
+    raw_cmd = extract_single_command(ai_response)
+    if raw_cmd:
+        parts = raw_cmd.strip().split()
+        binary = parts[0]
+        resolved_bin = resolve_binary(binary)
+        if resolved_bin:
+            resolved_cmd = f"{resolved_bin} {' '.join(parts[1:])}".strip()
+            if not resolved_cmd.endswith("&") and not any(binary.lower().startswith(x) for x in ["sudo", "systemctl", "mkdir", "rm", "cp", "mv", "pkill"]):
+                resolved_cmd += " &"
+            return resolved_cmd
+        elif binary.lower() in ["telegram", "telegram-desktop", "ayugram"]:
+            t_bin = resolve_binary("Telegram") or resolve_binary("telegram-desktop")
+            if t_bin:
+                return f"{t_bin} &"
+
+    speech_lower = user_speech.lower()
+    for kw_tuple, candidates in APP_KEYWORDS.items():
+        if any(kw in speech_lower for kw in kw_tuple):
+            for cand in candidates:
+                found = resolve_binary(cand)
+                if found:
+                    return f"{found} &"
+
+    return raw_cmd
+
+
 def execute_voice_command(cmd: str) -> str:
     """Executes a voice-requested shell command safely in the background or subshell."""
-    if not cmd:
-        return ""
-
-    cmd = sanitize_shell_command(cmd)
     if not cmd:
         return ""
 
     if find_destructive_pattern(cmd):
         return f"[Skipped dangerous command: {cmd}]"
 
-    # Auto-background GUI applications
     first_word = cmd.strip().split()[0].lower()
     gui_apps = [
-        "firefox", "google-chrome", "chrome", "chromium", "zen", "opera", "brave",
-        "telegram", "telegram-desktop", "kitty", "alacritty", "foot", "konsole",
-        "gnome-terminal", "nemo", "thunar", "nautilus", "dolphin", "code", "vscodium",
-        "zed", "mpv", "vlc", "obs", "gimp", "inkscape", "discord", "steam"
+        "telegram", "firefox", "google-chrome", "chrome", "chromium", "zen", "opera", "brave",
+        "kitty", "alacritty", "foot", "konsole", "gnome-terminal", "nemo", "thunar", "nautilus",
+        "dolphin", "code", "vscodium", "zed", "mpv", "vlc", "obs", "gimp", "inkscape", "discord", "steam"
     ]
     if any(app in first_word for app in gui_apps) and not cmd.strip().endswith("&"):
         cmd = cmd.strip() + " &"
@@ -792,7 +843,7 @@ def _clean_text_for_speech(text: str) -> str:
     if not text:
         return ""
     clean = re.sub(r'\([^)]*\)', '', text)  # Strip kaomoji
-    clean = re.sub(r'```.*?```', 'код скрипта', clean, flags=re.DOTALL)
+    clean = re.sub(r'```.*?```', '', clean, flags=re.DOTALL)
     clean = re.sub(r'`[^`]*`', '', clean)
     clean = re.sub(r'https?://\S+', '', clean)
     clean = re.sub(r'[\*\#\_~|]', '', clean)
@@ -1567,16 +1618,16 @@ def cmd_talk():
             )
             response = ask_ai(voice_prompt)
 
-            cmd_to_run = extract_single_command(response)
+            cmd_to_run = resolve_voice_intent_command(user_text, response)
             exec_info = ""
             if cmd_to_run:
                 exec_info = execute_voice_command(cmd_to_run)
 
             clean_ai_text = _clean_text_for_speech(response)
-            _HUD_LAST_AI = clean_ai_text + (f"  {GREEN}{exec_info}{RESET}" if exec_info else "")
+            _HUD_LAST_AI = (clean_ai_text or "Выполняю команду.") + (f"  {GREEN}{exec_info}{RESET}" if exec_info else "")
 
             _render_talk_hud("[SPEAK]", f"SPEAKING RESPONSE... {exec_info}", _HUD_LAST_USER, _HUD_LAST_AI)
-            tts_synthesize_and_play(clean_ai_text, lang="ru")
+            tts_synthesize_and_play(clean_ai_text or "Выполняю команду.", lang="ru")
 
     except (KeyboardInterrupt, EOFError):
         pass
@@ -1614,14 +1665,14 @@ def cmd_listen(args: list):
     )
     response = ask_ai(voice_prompt)
 
-    cmd_to_run = extract_single_command(response)
+    cmd_to_run = resolve_voice_intent_command(text, response)
     exec_info = ""
     if cmd_to_run:
         exec_info = execute_voice_command(cmd_to_run)
 
     print_box("Larp AI Response", response + (f"\n\n{GREEN}{exec_info}{RESET}" if exec_info else ""), border_color=PINK)
     clean_ai_text = _clean_text_for_speech(response)
-    tts_synthesize_and_play(clean_ai_text)
+    tts_synthesize_and_play(clean_ai_text or "Выполняю команду.")
 
 
 def cmd_speak(args: list):
