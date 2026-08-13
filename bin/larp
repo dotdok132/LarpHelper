@@ -1694,16 +1694,18 @@ def record_user_speech(duration_sec: int = None, auto_stop: bool = None) -> str:
             silence_thresh = max(120.0, ambient_baseline * 1.1)
 
             if rms > speech_thresh:
+                if not has_speech:
+                    viz.update(title="Speech detected! Speak naturally...", status="RECORDING")
                 has_speech = True
                 silence_counter = 0
-                viz.update(title="Speech detected! Speak naturally...", status="RECORDING")
             elif has_speech:
                 if rms < silence_thresh:
                     silence_counter += 1
                 else:
                     silence_counter = 0
 
-                if auto_stop and silence_counter >= 11:
+                # 18-20 frames * 0.1s = ~1.8 to 2.0 seconds of silence AFTER user finished speaking
+                if auto_stop and silence_counter >= 18:
                     viz.update(title="Silence detected. Processing speech...", status="TRANSCRIBING")
                     break
 
@@ -1726,17 +1728,14 @@ def record_user_speech(duration_sec: int = None, auto_stop: bool = None) -> str:
         viz.stop()
 
     if not os.path.exists(TMP_AUDIO_INPUT):
-        print(f"{RED}[-] WAV file not created. Check microphone permissions.{RESET}")
         return ""
 
     file_size = os.path.getsize(TMP_AUDIO_INPUT)
     if file_size < 1000:
-        print(f"{YELLOW}[!] Captured audio file is too small ({file_size} bytes). Check your microphone.{RESET}")
         return ""
 
-    if not has_speech and not _wav_has_audio(TMP_AUDIO_INPUT):
-        print(f"{YELLOW}[!] Microphone recorded silence. Is your mic muted or not selected?{RESET}")
-        print(f"{DIM}    Tip: run 'alsamixer' or 'pavucontrol' to check input levels.{RESET}")
+    if not has_speech:
+        # User did not speak (room was silent / ambient background noise only). Return empty string silently.
         return ""
 
     return TMP_AUDIO_INPUT
@@ -2226,15 +2225,8 @@ def cmd_talk():
             audio_file = record_user_speech()
 
             if not audio_file:
-                _HUD_FULL_SCREEN = False
-                try:
-                    user_text = input(f"{PINK}{BOLD}No audio captured. Type query (or Enter to retry): {RESET}").strip()
-                    if not user_text:
-                        _HUD_FULL_SCREEN = True
-                        continue
-                except (KeyboardInterrupt, EOFError):
-                    break
-                _HUD_FULL_SCREEN = True
+                # User did not speak (quiet room). Continue passive listening in full-screen HUD mode!
+                continue
             else:
                 with HudAnimationLoop("[STT]", "TRANSCRIBING SPEECH (Whisper AI...)", _HUD_LAST_USER, _HUD_LAST_AI):
                     user_text = transcribe_audio_stt(audio_file)
