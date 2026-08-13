@@ -17,11 +17,14 @@ import urllib.request
 import urllib.parse
 import urllib.error
 import re
+import textwrap
 import time
 import threading
 import shutil
 import socket
 import tarfile
+
+__version__ = "4.1.0"
 
 # --- Truecolor Pastel Palette ---
 PINK        = "\033[38;2;245;169;184m"   # Soft Pastel Pink (#F5A9B8)
@@ -155,29 +158,154 @@ class Spinner:
         self.thread.start()
 
     def stop(self):
+        """Idempotent: streaming providers stop the spinner on the first token,
+        and the surrounding error handling may stop it again."""
+        if not self.thread:
+            return
         self.running = False
-        if self.thread:
-            self.thread.join()
+        self.thread.join()
+        self.thread = None
+
+
+class StreamPrinter:
+    """Prints a model answer token by token, wrapped to the terminal width.
+
+    A spinner only says "something is happening"; this shows the answer being
+    written, which is the difference between waiting blind for 40 seconds and
+    reading along. Wrapping is done here because the text arrives in fragments
+    that do not respect word or line boundaries.
+    """
+
+    def __init__(self, title: str, border_color: str = PINK):
+        self.title = title
+        self.border_color = border_color
+        self.width = box_width()
+        self.column = 0
+        self.pending = ""
+        self.started = False
+        self.chunks = []
+        # Leading spaces are kept after a real newline (indented code lines keep
+        # their shape) but dropped after a soft wrap, where they would look like
+        # a ragged left margin.
+        self.after_hard_newline = True
+
+    def _open(self):
+        dashes = max(0, self.width - visible_width(self.title) - 4)
+        print(f"{self.border_color}╭─ {BOLD}{WHITE}{self.title}{RESET} "
+              f"{self.border_color}{'─' * dashes}╮{RESET}")
+        sys.stdout.write(f"{self.border_color}│{RESET} ")
+        sys.stdout.flush()
+        self.started = True
+
+    def _newline(self, hard: bool = True):
+        sys.stdout.write(f"\n{self.border_color}│{RESET} ")
+        self.column = 0
+        self.after_hard_newline = hard
+
+    def _emit_word(self, word: str):
+        if self.column + len(word) > self.width - 2 and self.column > 0:
+            self._newline(hard=False)
+        sys.stdout.write(word)
+        self.column += len(word)
+        self.after_hard_newline = False
+
+    def write(self, chunk: str):
+        """Feeds one fragment of the answer to the terminal."""
+        if not chunk:
+            return
+        if not self.started:
+            self._open()
+        self.chunks.append(chunk)
+
+        # Buffer until a word boundary so a word is never split across a wrap.
+        self.pending += chunk
+        while True:
+            match = re.search(r'[\s\n]', self.pending)
+            if not match:
+                break
+            word, separator, self.pending = (
+                self.pending[:match.start()],
+                self.pending[match.start()],
+                self.pending[match.start() + 1:],
+            )
+            if word:
+                self._emit_word(word)
+            if separator == "\n":
+                self._newline()
+            elif self.column > 0 or self.after_hard_newline:
+                sys.stdout.write(" ")
+                self.column += 1
+        sys.stdout.flush()
+
+    def finish(self) -> str:
+        """Closes the box and returns everything that was printed."""
+        if not self.started:
+            return "".join(self.chunks)
+        if self.pending:
+            self._emit_word(self.pending)
+            self.pending = ""
+        print(f"\n{self.border_color}╰" + "─" * max(0, self.width - 2) + f"╯{RESET}")
+        sys.stdout.flush()
+        return "".join(self.chunks)
 
 
 def print_banner():
     banner = f"""
 {PINK}{BOLD}  ╭───╮   {DEEP_PINK} █░░ █▀█ █▀█ █▀█ █░░ ░▀█ █▄░█ █░█ █░█{RESET}
 {PINK}{BOLD}  │   │   {DEEP_PINK} █▄▄ █▀█ █▀▄ █▀▀ █▄▄ █▄█ █░▀█ █▄█ ▄▀▄{RESET}
-{PINK}{BOLD}  ╰───╯   {CYAN}─── Universal AI OS Companion v4.0 ───{RESET}
+{PINK}{BOLD}  ╰───╯   {CYAN}─── Universal AI OS Companion v{__version__} ───{RESET}
 """
     print(banner)
 
 
+def visible_width(text: str) -> int:
+    """Length of `text` as rendered — colour escapes occupy no columns."""
+    return len(plain_text(text))
+
+
+def box_width() -> int:
+    """Inner width shared by print_box() and the streaming printer."""
+    return max(20, min(shutil.get_terminal_size((80, 20)).columns - 4, 90))
+
+
+def wrap_to_width(text: str, width: int) -> list:
+    """Wraps text to `width` visible columns, preserving blank lines and indentation.
+
+    Model answers routinely exceed the terminal width; without this the box
+    borders wrapped mid-line and the output looked broken.
+    """
+    wrapped = []
+    for line in text.splitlines() or [""]:
+        if visible_width(line) <= width:
+            wrapped.append(line)
+            continue
+        if plain_text(line).strip() == "":
+            wrapped.append("")
+            continue
+        indent = line[:len(line) - len(line.lstrip())]
+        # textwrap counts escape sequences as characters, so only uncoloured
+        # lines can be wrapped precisely; coloured ones are left intact rather
+        # than cut in the middle of an escape.
+        if "\x1b" in line:
+            wrapped.append(line)
+            continue
+        wrapped.extend(textwrap.wrap(
+            line, width=width, initial_indent=indent, subsequent_indent=indent,
+            break_long_words=True, break_on_hyphens=False,
+        ) or [""])
+    return wrapped
+
+
 def print_box(title: str, text: str, border_color: str = PINK):
-    lines = text.splitlines()
-    term_width = min(shutil.get_terminal_size((80, 20)).columns - 4, 90)
-    
-    top = f"{border_color}╭─ {BOLD}{WHITE}{title}{RESET} " + f"{border_color}─" * max(0, term_width - len(title) - 4) + f"╮{RESET}"
+    term_width = box_width()
+    inner_width = term_width - 2
+
+    dashes = max(0, term_width - visible_width(title) - 4)
+    top = f"{border_color}╭─ {BOLD}{WHITE}{title}{RESET} " + f"{border_color}{'─' * dashes}╮{RESET}"
     bottom = f"{border_color}╰" + "─" * max(0, term_width - 2) + f"╯{RESET}"
-    
+
     print(top)
-    for line in lines:
+    for line in wrap_to_width(text, inner_width):
         print(f"{border_color}│{RESET} {line}")
     print(bottom)
 
@@ -292,13 +420,58 @@ def confirm_destructive(cmd: str) -> bool:
     return False
 
 
-def extract_command_from_line(line: str, tokens: list) -> str:
-    """Extracts a shell command from a model response line.
+def sanitize_shell_command(cmd: str) -> str:
+    """Cleans an AI-generated command, or returns "" if it cannot be trusted.
 
-    Only accepts lines that *start* with a known command token (after stripping
-    markdown bullets, numbering and shell prompts). Prose that merely mentions a
-    command mid-sentence is rejected, so explanatory text never reaches the shell.
+    Unbalanced quotes used to be "fixed" by appending the missing quote. That
+    silently changes what the command does before it is handed to a shell, so a
+    truncated or malformed command is now rejected outright: the caller reports
+    it instead of running a guess.
     """
+    if not cmd:
+        return ""
+    cmd = cmd.strip()
+    cmd = re.sub(r'^`+|`+$', '', cmd).strip()
+    cmd = re.sub(r'^bash\s+', '', cmd).strip()
+
+    if cmd.count("'") % 2 != 0 or cmd.count('"') % 2 != 0:
+        return ""
+
+    return cmd.strip()
+
+
+# Shell keywords and builtins that legitimately start a one-liner but are not
+# files on disk, so shutil.which() cannot see them.
+SHELL_BUILTINS = {
+    "cd", "echo", "export", "for", "while", "if", "case", "read", "set",
+    "unset", "source", "test", "printf", "eval", "exec", "true", "false",
+    "sudo", "doas", "time", "env", "command",
+}
+
+
+def looks_like_a_command(line: str) -> bool:
+    """True when the line starts with something this machine can actually run.
+
+    Checking the first token against PATH is what separates a command from
+    prose: a sentence like "Then remove the cache" starts with a word that is
+    not an executable, while `find / -name '*.log'` starts with one that is.
+    """
+    stripped = line.strip()
+    if not stripped or stripped.startswith("#"):
+        return False
+
+    first = stripped.split()[0]
+    # Variable assignments and absolute paths are commands too.
+    if re.match(r'^[A-Za-z_][A-Za-z0-9_]*=', first) or first.startswith(("/", "./", "~/")):
+        return True
+    if not re.match(r'^[A-Za-z0-9_.-]+$', first):
+        return False
+
+    return first in SHELL_BUILTINS or bool(shutil.which(first))
+
+
+def strip_line_markers(line: str) -> str:
+    """Removes markdown bullets, numbering, prompts and backticks from a line."""
     candidate = line.strip()
     # Markers can be stacked ("- $ `cmd`"), so strip until nothing changes.
     for _ in range(5):
@@ -310,36 +483,46 @@ def extract_command_from_line(line: str, tokens: list) -> str:
         if stripped == candidate:
             break
         candidate = stripped
+    return candidate
 
+
+def extract_command_from_line(line: str, tokens: list) -> str:
+    """Extracts a shell command from a model response line.
+
+    Only accepts lines that *start* with a known command token (after stripping
+    markdown bullets, numbering and shell prompts). Prose that merely mentions a
+    command mid-sentence is rejected, so explanatory text never reaches the shell.
+    """
+    candidate = strip_line_markers(line)
     for token in tokens:
         if candidate.startswith(token):
             return candidate
     return ""
 
 
-def sanitize_shell_command(cmd: str) -> str:
-    """Sanitizes and balances quotes in AI-generated bash commands."""
-    if not cmd:
+def extract_single_command(response: str) -> str:
+    """Picks one runnable command out of a free-form model response.
+
+    `larp do` used to hand the entire raw response to sanitize_shell_command()
+    and offer *that* for execution — so any explanation the model added, or an
+    error report produced when every provider failed, could be executed as a
+    shell command. A fenced code block wins when present; otherwise the first
+    line that actually looks like a command is used.
+    """
+    if not response:
         return ""
-    cmd = cmd.strip()
-    cmd = re.sub(r'^`+|`+$', '', cmd).strip()
-    cmd = re.sub(r'^bash\s+', '', cmd).strip()
 
-    # Balance single quotes
-    if cmd.count("'") % 2 != 0:
-        if cmd.endswith("'"):
-            cmd = cmd[:-1]
-        else:
-            cmd += "'"
+    fenced = re.search(r'```(?:[a-zA-Z]*)\n(.*?)```', response, re.DOTALL)
+    candidates = (fenced.group(1) if fenced else response).splitlines()
 
-    # Balance double quotes
-    if cmd.count('"') % 2 != 0:
-        if cmd.endswith('"'):
-            cmd = cmd[:-1]
-        else:
-            cmd += '"'
+    for line in candidates:
+        candidate = strip_line_markers(line)
+        if not candidate or candidate.startswith("```"):
+            continue
+        if looks_like_a_command(candidate):
+            return sanitize_shell_command(candidate)
 
-    return cmd.strip()
+    return ""
 
 
 def load_config() -> dict:
@@ -522,6 +705,27 @@ def get_full_web_context(query: str) -> str:
     return "\n\n".join(context_blocks)
 
 
+def read_meminfo() -> tuple:
+    """Returns (MemTotal, MemAvailable) in kB, or (0, 0).
+
+    Reading by key rather than by line index: the order of /proc/meminfo is not
+    guaranteed, and MemAvailable is absent on kernels older than 3.14.
+    """
+    values = {}
+    try:
+        with open("/proc/meminfo", "r") as f:
+            for line in f:
+                key, _, rest = line.partition(":")
+                if key in ("MemTotal", "MemAvailable", "MemFree"):
+                    values[key] = int(rest.split()[0])
+    except Exception:
+        return (0, 0)
+
+    total = values.get("MemTotal", 0)
+    available = values.get("MemAvailable", values.get("MemFree", 0))
+    return (total, available)
+
+
 def get_system_info() -> str:
     info_lines = []
 
@@ -566,28 +770,42 @@ def get_system_info() -> str:
     except Exception:
         pass
 
-    try:
-        with open("/proc/meminfo", "r") as f:
-            lines = f.readlines()
-            total_kb = int(lines[0].split()[1])
-            avail_kb = int(lines[2].split()[1])
-            total_gb = round(total_kb / 1024 / 1024, 1)
-            avail_gb = round(avail_kb / 1024 / 1024, 1)
-            info_lines.append(f"RAM: {avail_gb} GB free of {total_gb} GB")
-    except Exception:
-        pass
+    total_kb, avail_kb = read_meminfo()
+    if total_kb:
+        total_gb = round(total_kb / 1024 / 1024, 1)
+        avail_gb = round(avail_kb / 1024 / 1024, 1)
+        info_lines.append(f"RAM: {avail_gb} GB free of {total_gb} GB")
 
     return "\n".join(info_lines)
 
 
 def get_available_ollama_models(ollama_url: str) -> list:
+    """Returns the installed model names, tags included ("llama3:8b").
+
+    The tag used to be stripped, so a configured "llama3:8b" never matched what
+    was installed and larp silently answered with a different model.
+    """
     try:
         req = urllib.request.Request(f"{ollama_url}/api/tags", method="GET")
         with urllib.request.urlopen(req, timeout=2) as resp:
             data = json.loads(resp.read().decode("utf-8"))
-            return [m.get("name", "").split(":")[0] for m in data.get("models", [])]
+            return [m.get("name", "") for m in data.get("models", []) if m.get("name")]
     except Exception:
         return []
+
+
+def model_is_installed(target: str, installed: list) -> bool:
+    """Matches a configured model against installed ones, tolerating the tag.
+
+    "mistral" matches "mistral:latest", and "llama3:8b" matches only itself.
+    """
+    if not target:
+        return False
+    if target in installed:
+        return True
+    if ":" in target:
+        return False
+    return any(name.split(":")[0] == target for name in installed)
 
 
 def check_ollama_status(ollama_url: str) -> bool:
@@ -599,76 +817,144 @@ def check_ollama_status(ollama_url: str) -> bool:
         return False
 
 
+def service_command(action: str, service: str) -> list:
+    """Builds the init-system command for starting/stopping a system service.
+
+    sudo is included because these are system-level units: without it systemctl
+    returns "access denied", and with capture_output that failure was invisible.
+    """
+    init_name, _, _, _ = detect_init_system()
+    prefix = ["sudo"] if os.geteuid() != 0 and shutil.which("sudo") else []
+
+    if init_name == "systemd":
+        return prefix + ["systemctl", action, service]
+    if init_name == "OpenRC":
+        return prefix + ["rc-service", service, action]
+    if init_name == "runit":
+        return prefix + ["sv", action, service]
+    if init_name == "dinit":
+        return prefix + ["dinitctl", action, service]
+    if init_name == "sysvinit":
+        return prefix + ["service", service, action]
+    return []
+
+
+def start_ollama_daemon(ollama_url: str) -> bool:
+    """Starts Ollama, preferring the user unit and falling back to `ollama serve`.
+
+    Returns True once the daemon answers on `ollama_url`.
+    """
+    attempts = []
+
+    # A user-level unit needs no password, so it is tried before the system one.
+    if shutil.which("systemctl") and detect_init_system()[0] == "systemd":
+        attempts.append(["systemctl", "--user", "start", "ollama"])
+
+    service_cmd = service_command("start", "ollama")
+    if service_cmd:
+        attempts.append(service_cmd)
+
+    for command in attempts:
+        try:
+            result = subprocess.run(command, capture_output=True, text=True, check=False)
+        except Exception:
+            continue
+        if result.returncode == 0:
+            for _ in range(10):
+                time.sleep(1)
+                if check_ollama_status(ollama_url):
+                    return True
+        elif result.stderr.strip():
+            print(f"{DIM}    {command[0]}: {result.stderr.strip().splitlines()[0]}{RESET}")
+
+    if shutil.which("ollama"):
+        try:
+            subprocess.Popen(["ollama", "serve"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception as e:
+            print(f"{RED}[-] Error launching Ollama: {e}{RESET}")
+        for _ in range(10):
+            time.sleep(1)
+            if check_ollama_status(ollama_url):
+                return True
+
+    return False
+
+
 def ensure_ollama_and_get_model(config: dict) -> str:
+    """Makes sure Ollama is reachable and returns the model to use.
+
+    Raises ProviderError rather than exiting: this runs inside a provider, so
+    sys.exit() here used to kill the whole process — taking down the fallback
+    chain (the next provider was never tried) and any running `larp chat`.
+    """
     global OLLAMA_STARTED_BY_LARP
     ollama_conf = config.get("ollama", {})
     ollama_url = ollama_conf.get("url", OLLAMA_URL)
     target_model = ollama_conf.get("model", DEFAULT_MODEL)
 
     if not check_ollama_status(ollama_url):
+        if not ollama_conf.get("auto_start", True):
+            raise ProviderError(
+                f"{RED}Ollama is not running at {ollama_url} and auto_start is disabled.{RESET}\n"
+                f"{CYAN}Start it yourself, or: larp config set ollama.auto_start true{RESET}")
+
         print(f"{PINK}Ollama is not running. Starting Ollama daemon...{RESET}")
+        if not start_ollama_daemon(ollama_url):
+            raise ProviderError(
+                f"{RED}Could not start Ollama or connect to {ollama_url}.{RESET}\n"
+                f"{CYAN}Check 'systemctl status ollama', or run 'ollama serve' manually.{RESET}")
+
         OLLAMA_STARTED_BY_LARP = True
-        
-        init_name, _, _, _ = detect_init_system()
-        if init_name == "systemd":
-            subprocess.run(["systemctl", "start", "ollama"], capture_output=True, text=True, check=False)
-        elif init_name == "OpenRC":
-            subprocess.run(["rc-service", "ollama", "start"], capture_output=True, text=True, check=False)
-        elif init_name == "runit":
-            subprocess.run(["sv", "start", "ollama"], capture_output=True, text=True, check=False)
-        else:
-            try:
-                subprocess.Popen(["ollama", "serve"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            except Exception as e:
-                print(f"{RED}[-] Error launching Ollama processes: {e}{RESET}")
-
-        started = False
-        for _ in range(10):
-            time.sleep(1)
-            if check_ollama_status(ollama_url):
-                started = True
-                break
-
-        if not started:
-            print(f"{YELLOW}[!] Could not connect to Ollama on {ollama_url}{RESET}")
-            sys.exit(1)
-        else:
-            print(f"{GREEN}[+] Ollama service started successfully!{RESET}\n")
+        print(f"{GREEN}[+] Ollama service started successfully!{RESET}\n")
 
     models = get_available_ollama_models(ollama_url)
-    if target_model in models:
+    if model_is_installed(target_model, models):
         return target_model
 
-    if not models:
-        print(f"{PINK}Model '{target_model}' not found. Pulling model (ollama pull {target_model})...{RESET}")
-        pull_res = subprocess.run(["ollama", "pull", target_model])
-        if pull_res.returncode != 0:
-            print(f"{RED}[-] Failed to pull model {target_model}.{RESET}")
-            sys.exit(1)
-        return target_model
+    print(f"{PINK}Model '{target_model}' is not installed. Pulling it (ollama pull {target_model})...{RESET}")
+    if not shutil.which("ollama"):
+        raise ProviderError(
+            f"{RED}Model '{target_model}' is not installed and the ollama CLI was not found.{RESET}\n"
+            f"{CYAN}Installed models: {', '.join(models) if models else 'none'}{RESET}")
 
-    priority_order = [target_model, "mistral", "dolphin-mistral", "llama3.2-uncensored", "hermes3", "qwen2.5-coder", "gemma4"]
-    for p in priority_order:
-        if p in models:
-            return p
+    pull_res = subprocess.run(["ollama", "pull", target_model])
+    if pull_res.returncode != 0:
+        # Only now settle for something else, and say so — silently answering
+        # with a different model than the configured one is a surprise.
+        if models:
+            substitute = models[0]
+            print(f"{YELLOW}[!] Could not pull '{target_model}'. Using installed model "
+                  f"'{substitute}' instead.{RESET}")
+            return substitute
+        raise ProviderError(
+            f"{RED}Failed to pull model '{target_model}' and no other model is installed.{RESET}")
 
-    return models[0]
+    return target_model
 
 
-def stop_ollama_and_free_vram():
+def stop_ollama_and_free_vram(config: dict = None):
+    """Stops Ollama again, but only if larp was the one that started it."""
     global OLLAMA_STARTED_BY_LARP
-    if OLLAMA_STARTED_BY_LARP:
-        init_name, _, _, _ = detect_init_system()
+    if not OLLAMA_STARTED_BY_LARP:
+        return
+    if config is not None and not config.get("ollama", {}).get("auto_stop", True):
+        return
+
+    commands = []
+    if shutil.which("systemctl") and detect_init_system()[0] == "systemd":
+        commands.append(["systemctl", "--user", "stop", "ollama"])
+    service_cmd = service_command("stop", "ollama")
+    if service_cmd:
+        commands.append(service_cmd)
+
+    for command in commands:
         try:
-            if init_name == "systemd":
-                subprocess.run(["systemctl", "stop", "ollama"], capture_output=True, text=True, check=False)
-            elif init_name == "OpenRC":
-                subprocess.run(["rc-service", "ollama", "stop"], capture_output=True, text=True, check=False)
-            elif init_name == "runit":
-                subprocess.run(["sv", "stop", "ollama"], capture_output=True, text=True, check=False)
+            if subprocess.run(command, capture_output=True, text=True, check=False).returncode == 0:
+                break
         except Exception:
-            pass
-        OLLAMA_STARTED_BY_LARP = False
+            continue
+
+    OLLAMA_STARTED_BY_LARP = False
 
 
 def rank_gemini_model(model_name: str):
@@ -710,32 +996,67 @@ def get_valid_gemini_models_from_api(api_key: str) -> list:
 
 
 # =============================================================================
-# UNIVERSAL PROVIDERS ENGINE (Ollama, Gemini API, Claude API, OpenAI API)
+# UNIVERSAL PROVIDERS ENGINE (Ollama, Gemini, Claude, OpenAI, OpenRouter)
 # =============================================================================
+#
+# Every provider has the signature
+#     func(prompt, extra_web_context, config, on_chunk=None) -> str
+# and returns the complete answer. When `on_chunk` is given the provider uses
+# the streaming endpoint and calls it with each fragment as it arrives, so the
+# caller can show the answer being written instead of a spinner.
 
-def query_provider_ollama(prompt: str, extra_web_context: str, config: dict) -> str:
+
+def build_full_prompt(prompt: str, extra_web_context: str) -> str:
+    """Assembles the user-visible prompt shared by every provider."""
+    full_prompt = f"[SYSTEM & USER CONTEXT]\n{get_system_info()}\n\n"
+    if extra_web_context:
+        full_prompt += f"[WEB SEARCH CONTEXT]\n{extra_web_context}\n\n"
+    return full_prompt + f"[USER PROMPT]\n{prompt}"
+
+
+def iter_json_lines(resp):
+    """Yields parsed objects from an NDJSON stream (Ollama)."""
+    for raw in resp:
+        line = raw.decode("utf-8", errors="ignore").strip()
+        if not line:
+            continue
+        try:
+            yield json.loads(line)
+        except json.JSONDecodeError:
+            continue
+
+
+def iter_sse_events(resp):
+    """Yields parsed `data:` payloads from a Server-Sent Events stream."""
+    for raw in resp:
+        line = raw.decode("utf-8", errors="ignore").strip()
+        if not line or not line.startswith("data:"):
+            continue
+        payload = line[len("data:"):].strip()
+        if payload == "[DONE]":
+            return
+        try:
+            yield json.loads(payload)
+        except json.JSONDecodeError:
+            continue
+
+
+def query_provider_ollama(prompt: str, extra_web_context: str, config: dict, on_chunk=None) -> str:
     ollama_conf = config.get("ollama", {})
     ollama_url = ollama_conf.get("url", OLLAMA_URL)
     active_model = ensure_ollama_and_get_model(config)
 
-    sys_context = get_system_info()
-    full_prompt = f"[SYSTEM & USER CONTEXT]\n{sys_context}\n\n"
-    if extra_web_context:
-        full_prompt += f"[WEB SEARCH CONTEXT]\n{extra_web_context}\n\n"
-    full_prompt += f"[USER PROMPT]\n{prompt}"
-
     payload = {
         "model": active_model,
-        "prompt": full_prompt,
+        "prompt": build_full_prompt(prompt, extra_web_context),
         "system": build_system_prompt(),
-        "stream": False,
+        "stream": bool(on_chunk),
         "keep_alive": ollama_conf.get("keep_alive", 0)
     }
 
-    data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
         f"{ollama_url}/api/generate",
-        data=data,
+        data=json.dumps(payload).encode("utf-8"),
         headers={"Content-Type": "application/json"},
         method="POST"
     )
@@ -745,22 +1066,36 @@ def query_provider_ollama(prompt: str, extra_web_context: str, config: dict) -> 
 
     try:
         with urllib.request.urlopen(req, timeout=120) as resp:
-            spinner.stop()
-            if resp.status == 200:
-                result = json.loads(resp.read().decode("utf-8"))
-                response_text = result.get("response", "").strip()
-                stop_ollama_and_free_vram()
-                return response_text
-            else:
-                stop_ollama_and_free_vram()
+            if resp.status != 200:
                 raise ProviderError(f"{RED}Ollama Error: HTTP status {resp.status}{RESET}")
+
+            if not on_chunk:
+                spinner.stop()
+                result = json.loads(resp.read().decode("utf-8"))
+                return result.get("response", "").strip()
+
+            collected = []
+            for event in iter_json_lines(resp):
+                if event.get("error"):
+                    raise ProviderError(f"{RED}Ollama Error: {event['error']}{RESET}")
+                fragment = event.get("response", "")
+                if fragment:
+                    spinner.stop()
+                    collected.append(fragment)
+                    on_chunk(fragment)
+                if event.get("done"):
+                    break
+            return "".join(collected).strip()
+    except ProviderError:
+        raise
     except Exception as e:
-        spinner.stop()
-        stop_ollama_and_free_vram()
         raise ProviderError(f"{RED}Ollama Connection Error: {e}{RESET}")
+    finally:
+        spinner.stop()
+        stop_ollama_and_free_vram(config)
 
 
-def query_provider_gemini(prompt: str, extra_web_context: str, config: dict) -> str:
+def query_provider_gemini(prompt: str, extra_web_context: str, config: dict, on_chunk=None) -> str:
     gemini_conf = config.get("gemini", {})
     api_key = gemini_conf.get("api_key", "").strip()
     user_model = gemini_conf.get("model", "auto").strip()
@@ -769,11 +1104,7 @@ def query_provider_gemini(prompt: str, extra_web_context: str, config: dict) -> 
         raise ProviderError(f"{RED}[-] Error: Gemini API Key is not set!\n{RESET}"
                 f"{CYAN}Run {BOLD}larp config{RESET}{CYAN} to set up your API key.{RESET}")
 
-    sys_context = get_system_info()
-    full_prompt = f"[SYSTEM & USER CONTEXT]\n{sys_context}\n\n"
-    if extra_web_context:
-        full_prompt += f"[WEB SEARCH CONTEXT]\n{extra_web_context}\n\n"
-    full_prompt += f"[USER PROMPT]\n{prompt}"
+    full_prompt = build_full_prompt(prompt, extra_web_context)
 
     payload = {
         "system_instruction": {
@@ -808,9 +1139,20 @@ def query_provider_gemini(prompt: str, extra_web_context: str, config: dict) -> 
     seen = set()
     candidate_models = [m for m in candidate_models if m and not (m in seen or seen.add(m))]
 
+    try:
+        return try_gemini_models(candidate_models, data, api_key, spinner, on_chunk)
+    finally:
+        # Kept outside the per-model loop: stopping it there left the remaining
+        # attempts with no progress indicator at all.
+        spinner.stop()
+
+
+def try_gemini_models(candidate_models: list, data: bytes, api_key: str, spinner, on_chunk) -> str:
+    """Tries each candidate model in turn, returning the first usable answer."""
     last_error = ""
     for model in candidate_models:
-        endpoint = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
+        method = "streamGenerateContent?alt=sse&" if on_chunk else "generateContent?"
+        endpoint = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:{method}key={api_key}"
         req = urllib.request.Request(
             endpoint,
             data=data,
@@ -819,30 +1161,43 @@ def query_provider_gemini(prompt: str, extra_web_context: str, config: dict) -> 
         )
         try:
             with urllib.request.urlopen(req, timeout=30) as resp:
-                spinner.stop()
-                if resp.status == 200:
+                if resp.status != 200:
+                    continue
+
+                if not on_chunk:
+                    spinner.stop()
                     result = json.loads(resp.read().decode("utf-8"))
                     candidates = result.get("candidates", [])
                     if candidates:
                         parts = candidates[0].get("content", {}).get("parts", [])
                         if parts:
                             return parts[0].get("text", "").strip()
+                    continue
+
+                collected = []
+                for event in iter_sse_events(resp):
+                    for candidate in event.get("candidates", []):
+                        for part in candidate.get("content", {}).get("parts", []):
+                            fragment = part.get("text", "")
+                            if fragment:
+                                spinner.stop()
+                                collected.append(fragment)
+                                on_chunk(fragment)
+                if collected:
+                    return "".join(collected).strip()
+                continue
         except urllib.error.HTTPError as e:
             last_error = e.read().decode("utf-8", errors="ignore")
             if e.code in [400, 404, 429, 500, 502, 503, 504]:
                 continue
-            else:
-                spinner.stop()
-                raise ProviderError(f"{RED}Gemini API Error ({e.code}): {last_error}{RESET}")
+            raise ProviderError(f"{RED}Gemini API Error ({e.code}): {last_error}{RESET}")
         except Exception as e:
-            spinner.stop()
             raise ProviderError(f"{RED}Gemini API Request Error: {e}{RESET}")
 
-    spinner.stop()
     raise ProviderError(f"{RED}Gemini API Error: None of the models {candidate_models[:4]} matched your API key.\nDetails: {last_error}{RESET}")
 
 
-def query_provider_claude(prompt: str, extra_web_context: str, config: dict) -> str:
+def query_provider_claude(prompt: str, extra_web_context: str, config: dict, on_chunk=None) -> str:
     claude_conf = config.get("claude", {})
     api_key = claude_conf.get("api_key", "").strip()
     model = claude_conf.get("model", "claude-opus-5").strip()
@@ -851,27 +1206,22 @@ def query_provider_claude(prompt: str, extra_web_context: str, config: dict) -> 
         raise ProviderError(f"{RED}[-] Error: Anthropic Claude API Key is not set!\n{RESET}"
                 f"{CYAN}Run {BOLD}larp config{RESET}{CYAN} to set up your API key.{RESET}")
 
-    sys_context = get_system_info()
-    full_prompt = f"[SYSTEM & USER CONTEXT]\n{sys_context}\n\n"
-    if extra_web_context:
-        full_prompt += f"[WEB SEARCH CONTEXT]\n{extra_web_context}\n\n"
-    full_prompt += f"[USER PROMPT]\n{prompt}"
-
     endpoint = "https://api.anthropic.com/v1/messages"
 
     payload = {
         "model": model,
-        "max_tokens": 1024,
+        "max_tokens": 2048,
         "system": build_system_prompt(),
         "messages": [
-            {"role": "user", "content": full_prompt}
+            {"role": "user", "content": build_full_prompt(prompt, extra_web_context)}
         ]
     }
+    if on_chunk:
+        payload["stream"] = True
 
-    data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
         endpoint,
-        data=data,
+        data=json.dumps(payload).encode("utf-8"),
         headers={
             "x-api-key": api_key,
             "anthropic-version": "2023-06-01",
@@ -884,26 +1234,82 @@ def query_provider_claude(prompt: str, extra_web_context: str, config: dict) -> 
     spinner.start()
 
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            spinner.stop()
-            if resp.status == 200:
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            if resp.status != 200:
+                raise ProviderError(f"{RED}Claude API Error: HTTP status {resp.status}{RESET}")
+
+            if not on_chunk:
+                spinner.stop()
                 result = json.loads(resp.read().decode("utf-8"))
                 contents = result.get("content", [])
                 if contents:
                     return contents[0].get("text", "").strip()
                 raise ProviderError(f"{RED}Empty response from Claude API.{RESET}")
-            else:
-                raise ProviderError(f"{RED}Claude API Error: HTTP status {resp.status}{RESET}")
+
+            collected = []
+            for event in iter_sse_events(resp):
+                event_type = event.get("type")
+                if event_type == "error":
+                    message = event.get("error", {}).get("message", "unknown error")
+                    raise ProviderError(f"{RED}Claude API Error: {message}{RESET}")
+                if event_type == "content_block_delta":
+                    fragment = event.get("delta", {}).get("text", "")
+                    if fragment:
+                        spinner.stop()
+                        collected.append(fragment)
+                        on_chunk(fragment)
+            if not collected:
+                raise ProviderError(f"{RED}Empty response from Claude API.{RESET}")
+            return "".join(collected).strip()
     except urllib.error.HTTPError as e:
-        spinner.stop()
         err_msg = e.read().decode("utf-8", errors="ignore")
         raise ProviderError(f"{RED}Claude API Error ({e.code}): {err_msg}{RESET}")
+    except ProviderError:
+        raise
     except Exception as e:
-        spinner.stop()
         raise ProviderError(f"{RED}Claude API Request Error: {e}{RESET}")
+    finally:
+        spinner.stop()
 
 
-def query_provider_openai(prompt: str, extra_web_context: str, config: dict) -> str:
+def read_openai_style_response(resp, spinner, on_chunk, label: str) -> str:
+    """Reads a chat-completions response, streaming or not.
+
+    OpenAI and OpenRouter speak the same wire format, so both providers share
+    this instead of keeping two copies of the parsing in sync.
+    """
+    if not on_chunk:
+        spinner.stop()
+        result = json.loads(resp.read().decode("utf-8"))
+        # OpenRouter reports upstream provider failures as a 200 with an "error"
+        # object instead of "choices" — report it rather than printing nothing.
+        if "error" in result and not result.get("choices"):
+            err = result["error"]
+            message = err.get("message", err) if isinstance(err, dict) else err
+            raise ProviderError(f"{RED}{label} Error: {message}{RESET}")
+        choices = result.get("choices", [])
+        if choices:
+            return choices[0].get("message", {}).get("content", "").strip()
+        raise ProviderError(f"{RED}Empty response from {label}.{RESET}")
+
+    collected = []
+    for event in iter_sse_events(resp):
+        if "error" in event and not event.get("choices"):
+            err = event["error"]
+            message = err.get("message", err) if isinstance(err, dict) else err
+            raise ProviderError(f"{RED}{label} Error: {message}{RESET}")
+        for choice in event.get("choices", []):
+            fragment = choice.get("delta", {}).get("content") or ""
+            if fragment:
+                spinner.stop()
+                collected.append(fragment)
+                on_chunk(fragment)
+    if not collected:
+        raise ProviderError(f"{RED}Empty response from {label}.{RESET}")
+    return "".join(collected).strip()
+
+
+def query_provider_openai(prompt: str, extra_web_context: str, config: dict, on_chunk=None) -> str:
     openai_conf = config.get("openai", {})
     api_key = openai_conf.get("api_key", "").strip()
     model = openai_conf.get("model", "gpt-4o-mini").strip()
@@ -912,26 +1318,21 @@ def query_provider_openai(prompt: str, extra_web_context: str, config: dict) -> 
         raise ProviderError(f"{RED}[-] Error: OpenAI API Key is not set!\n{RESET}"
                 f"{CYAN}Run {BOLD}larp config{RESET}{CYAN} to set up your API key.{RESET}")
 
-    sys_context = get_system_info()
-    full_prompt = f"[SYSTEM & USER CONTEXT]\n{sys_context}\n\n"
-    if extra_web_context:
-        full_prompt += f"[WEB SEARCH CONTEXT]\n{extra_web_context}\n\n"
-    full_prompt += f"[USER PROMPT]\n{prompt}"
-
     endpoint = "https://api.openai.com/v1/chat/completions"
 
     payload = {
         "model": model,
         "messages": [
             {"role": "system", "content": build_system_prompt()},
-            {"role": "user", "content": full_prompt}
+            {"role": "user", "content": build_full_prompt(prompt, extra_web_context)}
         ]
     }
+    if on_chunk:
+        payload["stream"] = True
 
-    data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
         endpoint,
-        data=data,
+        data=json.dumps(payload).encode("utf-8"),
         headers={
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json"
@@ -943,23 +1344,19 @@ def query_provider_openai(prompt: str, extra_web_context: str, config: dict) -> 
     spinner.start()
 
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            spinner.stop()
-            if resp.status == 200:
-                result = json.loads(resp.read().decode("utf-8"))
-                choices = result.get("choices", [])
-                if choices:
-                    return choices[0].get("message", {}).get("content", "").strip()
-                raise ProviderError(f"{RED}Empty response from OpenAI API.{RESET}")
-            else:
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            if resp.status != 200:
                 raise ProviderError(f"{RED}OpenAI API Error: HTTP status {resp.status}{RESET}")
+            return read_openai_style_response(resp, spinner, on_chunk, "OpenAI API")
     except urllib.error.HTTPError as e:
-        spinner.stop()
         err_msg = e.read().decode("utf-8", errors="ignore")
         raise ProviderError(f"{RED}OpenAI API Error ({e.code}): {err_msg}{RESET}")
+    except ProviderError:
+        raise
     except Exception as e:
-        spinner.stop()
         raise ProviderError(f"{RED}OpenAI API Request Error: {e}{RESET}")
+    finally:
+        spinner.stop()
 
 
 def get_openrouter_models(api_key: str = "") -> list:
@@ -975,7 +1372,7 @@ def get_openrouter_models(api_key: str = "") -> list:
         return []
 
 
-def query_provider_openrouter(prompt: str, extra_web_context: str, config: dict) -> str:
+def query_provider_openrouter(prompt: str, extra_web_context: str, config: dict, on_chunk=None) -> str:
     """OpenRouter — one API key for Claude, Gemini, GPT, Llama and ~400 other models.
 
     The API is OpenAI-compatible, so the payload matches query_provider_openai();
@@ -990,24 +1387,19 @@ def query_provider_openrouter(prompt: str, extra_web_context: str, config: dict)
                 f"{CYAN}Run {BOLD}larp config{RESET}{CYAN} to set up your API key.{RESET}\n"
                 f"{DIM}Get one at https://openrouter.ai/keys{RESET}")
 
-    sys_context = get_system_info()
-    full_prompt = f"[SYSTEM & USER CONTEXT]\n{sys_context}\n\n"
-    if extra_web_context:
-        full_prompt += f"[WEB SEARCH CONTEXT]\n{extra_web_context}\n\n"
-    full_prompt += f"[USER PROMPT]\n{prompt}"
-
     payload = {
         "model": model,
         "messages": [
             {"role": "system", "content": build_system_prompt()},
-            {"role": "user", "content": full_prompt}
+            {"role": "user", "content": build_full_prompt(prompt, extra_web_context)}
         ]
     }
+    if on_chunk:
+        payload["stream"] = True
 
-    data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
         f"{OPENROUTER_URL}/chat/completions",
-        data=data,
+        data=json.dumps(payload).encode("utf-8"),
         headers={
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
@@ -1023,25 +1415,11 @@ def query_provider_openrouter(prompt: str, extra_web_context: str, config: dict)
     spinner.start()
 
     try:
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            spinner.stop()
-            if resp.status == 200:
-                result = json.loads(resp.read().decode("utf-8"))
-                # OpenRouter surfaces upstream provider failures as a 200 with an
-                # "error" object instead of "choices" — report it rather than
-                # printing an empty response.
-                if "error" in result and not result.get("choices"):
-                    err = result["error"]
-                    msg = err.get("message", err) if isinstance(err, dict) else err
-                    raise ProviderError(f"{RED}OpenRouter Error: {msg}{RESET}")
-                choices = result.get("choices", [])
-                if choices:
-                    return choices[0].get("message", {}).get("content", "").strip()
-                raise ProviderError(f"{RED}Empty response from OpenRouter.{RESET}")
-            else:
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            if resp.status != 200:
                 raise ProviderError(f"{RED}OpenRouter Error: HTTP status {resp.status}{RESET}")
+            return read_openai_style_response(resp, spinner, on_chunk, "OpenRouter")
     except urllib.error.HTTPError as e:
-        spinner.stop()
         err_msg = e.read().decode("utf-8", errors="ignore")
         if e.code == 401:
             raise ProviderError(f"{RED}OpenRouter Error (401): invalid or expired API key.{RESET}\n"
@@ -1054,9 +1432,12 @@ def query_provider_openrouter(prompt: str, extra_web_context: str, config: dict)
             raise ProviderError(f"{RED}OpenRouter Error (404): model '{model}' does not exist.{RESET}\n"
                     f"{CYAN}List available models with {BOLD}larp config models{RESET}")
         raise ProviderError(f"{RED}OpenRouter Error ({e.code}): {err_msg}{RESET}")
+    except ProviderError:
+        raise
     except Exception as e:
-        spinner.stop()
         raise ProviderError(f"{RED}OpenRouter Request Error: {e}{RESET}")
+    finally:
+        spinner.stop()
 
 
 PROVIDER_FUNCS = {
@@ -1100,11 +1481,15 @@ def build_attempt_chain(config: dict) -> list:
     return attempts
 
 
-def query_ollama(prompt: str, extra_web_context: str = "") -> str:
+def ask_ai(prompt: str, extra_web_context: str = "", on_chunk=None) -> str:
     """Sends the prompt to the active provider, falling back down the chain on failure.
 
-    Named for the original Ollama-only implementation; it has been the general
-    provider dispatcher for a while.
+    Raises ProviderError when every attempt fails. It used to *return* the
+    failure report as if it were an answer, which meant `larp do` would offer to
+    execute the error text as a shell command.
+
+    `on_chunk` is forwarded to the provider for streaming; it is only called for
+    the attempt that succeeds, so a failed provider cannot half-print an answer.
     """
     config = load_config()
     attempts = build_attempt_chain(config)
@@ -1120,9 +1505,20 @@ def query_ollama(prompt: str, extra_web_context: str = "") -> str:
             attempt_config[provider]["model"] = model_override
 
         label = describe_attempt(provider, model_override, config)
+        announced = {"done": False}
+
+        def emit(fragment, label=label, index=index, announced=announced):
+            # The attribution has to be printed before the first token, not
+            # after the answer, or it would land at the bottom of the stream.
+            if index > 0 and not announced["done"]:
+                announced["done"] = True
+                print(f"{DIM}[answered by {label}]{RESET}")
+            on_chunk(fragment)
 
         try:
-            response = PROVIDER_FUNCS[provider](prompt, extra_web_context, attempt_config)
+            response = PROVIDER_FUNCS[provider](
+                prompt, extra_web_context, attempt_config, on_chunk=emit if on_chunk else None
+            )
         except ProviderError as exc:
             failures.append((label, str(exc)))
             remaining = attempts[index + 1:]
@@ -1132,7 +1528,7 @@ def query_ollama(prompt: str, extra_web_context: str = "") -> str:
                       f"Falling back to {BOLD}{next_label}{RESET}{YELLOW}...{RESET}")
             continue
 
-        if index > 0:
+        if index > 0 and not announced["done"]:
             # Name whoever actually answered — a silent fallback can quietly move
             # a free-model workload onto a paid one.
             print(f"{DIM}[answered by {label}]{RESET}")
@@ -1148,7 +1544,37 @@ def query_ollama(prompt: str, extra_web_context: str = "") -> str:
                       f"{BOLD}larp fallback add <provider> [model]{RESET}")
     result = "\n".join(report)
     save_history_entry(prompt, result, "none")
-    return result
+    raise ProviderError(result)
+
+
+def ask_ai_streamed(title: str, prompt: str, extra_web_context: str = "",
+                    border_color: str = PINK) -> str:
+    """Asks the AI and prints the answer as it is generated.
+
+    Returns the complete answer, or "" if every provider failed (the failure is
+    printed here so each command does not repeat the same error handling).
+    """
+    printer = StreamPrinter(title, border_color=border_color)
+    try:
+        answer = ask_ai(prompt, extra_web_context, on_chunk=printer.write)
+    except ProviderError as exc:
+        printer.finish()
+        print(f"\n{exc}\n")
+        return ""
+    printer.finish()
+    return answer
+
+
+def ask_ai_quietly(prompt: str, extra_web_context: str = "") -> str:
+    """Asks the AI without streaming, printing the failure instead of raising.
+
+    Used by the commands that parse the answer before showing anything.
+    """
+    try:
+        return ask_ai(prompt, extra_web_context)
+    except ProviderError as exc:
+        print(f"\n{exc}\n")
+        return ""
 
 
 # =============================================================================
@@ -1213,7 +1639,7 @@ def cmd_fetch():
         f"{PINK}   │    Larp    │   {RESET}",
         f"{PINK}   │  OS Linux  │   {RESET}",
         f"{PINK}   ╰────────────╯   {RESET}",
-        f"{CYAN}   ─── v4.0 ───     {RESET}"
+        f"{CYAN}   ─── v{__version__} ───  {RESET}"
     ]
 
     info = [
@@ -1260,9 +1686,8 @@ def cmd_code(args: list):
 
     print(f"{CYAN}Generating code for:{RESET} {BOLD}{prompt_in}{RESET}...\n")
     sys_p = "You are a senior Linux software developer. Write clean, optimized code with helpful comments."
-    
-    response = query_ollama(f"{sys_p}\n\nTask: {prompt_in}")
-    print_box("Generated Code", response, border_color=PINK)
+
+    ask_ai_streamed("Generated Code", f"{sys_p}\n\nTask: {prompt_in}")
     print()
 
 
@@ -1286,8 +1711,7 @@ def cmd_translate(args: list):
         return
 
     prompt = f"Translate the following text to English (or Russian if it is already in English). Provide only the clean translation:\n\n\"{text}\""
-    res = query_ollama(prompt)
-    print_box("Larp AI Translation", res, border_color=CYAN)
+    ask_ai_streamed("Larp AI Translation", prompt, border_color=CYAN)
     print()
 
 
@@ -1295,39 +1719,157 @@ def cmd_translate(args: list):
 # CONFIG BACKUP & SNAPSHOT (`larp backup`)
 # =============================================================================
 
+BACKUP_TARGETS = [
+    "~/.config/larp",
+    "~/.config/niri",
+    "~/.config/fwm",
+    "~/.config/waybar",
+    "~/.config/kitty",
+]
+
+KEEP_BACKUPS = 10
+
+
+def list_backups() -> list:
+    """Returns existing backup archives, newest first."""
+    if not os.path.isdir(BACKUPS_DIR):
+        return []
+    archives = [
+        os.path.join(BACKUPS_DIR, name)
+        for name in os.listdir(BACKUPS_DIR)
+        if name.startswith("larp-config-backup-") and name.endswith(".tar.gz")
+    ]
+    return sorted(archives, key=os.path.getmtime, reverse=True)
+
+
 def cmd_backup():
     """Creates a compressed archive of Larp Linux configurations."""
     print_banner()
     os.makedirs(BACKUPS_DIR, exist_ok=True)
+    os.chmod(BACKUPS_DIR, 0o700)
     stamp = time.strftime("%Y%m%d_%H%M%S")
     tar_path = os.path.join(BACKUPS_DIR, f"larp-config-backup-{stamp}.tar.gz")
 
     print(f"{CYAN}Creating backup of Linux configurations...{RESET}")
 
-    targets = [
-        os.path.expanduser("~/.config/larp"),
-        os.path.expanduser("~/.config/niri"),
-        os.path.expanduser("~/.config/fwm"),
-        os.path.expanduser("~/.config/waybar"),
-        os.path.expanduser("~/.config/kitty")
-    ]
-
-    with tarfile.open(tar_path, "w:gz") as tar:
-        for t in targets:
-            if os.path.exists(t):
-                tar.add(t, arcname=os.path.basename(t))
+    # The archive contains ~/.config/larp/config.json, which holds API keys in
+    # clear text. Creating it 0600 from the start (rather than chmod'ing after)
+    # means the keys are never briefly world-readable.
+    fd = os.open(tar_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "wb") as raw:
+        with tarfile.open(fileobj=raw, mode="w:gz") as tar:
+            for target in BACKUP_TARGETS:
+                path = os.path.expanduser(target)
+                if os.path.exists(path):
+                    tar.add(path, arcname=os.path.basename(path))
 
     size_mb = round(os.path.getsize(tar_path) / 1024 / 1024, 2)
     print(f"{GREEN}[+] Backup archive created successfully!{RESET}")
     print(f"  {CYAN}File:{RESET} {tar_path}")
-    print(f"  {CYAN}Size:{RESET} {size_mb} MB\n")
+    print(f"  {CYAN}Size:{RESET} {size_mb} MB")
+    print(f"  {DIM}Permissions: 0600 — the archive contains your API keys.{RESET}")
+
+    stale = list_backups()[KEEP_BACKUPS:]
+    for path in stale:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+    if stale:
+        print(f"  {DIM}Pruned {len(stale)} old backup(s), keeping the newest {KEEP_BACKUPS}.{RESET}")
+    print(f"\n{DIM}Restore with: larp restore{RESET}\n")
+
+
+def cmd_restore(args: list):
+    """Restores configuration from a backup archive — the other half of `larp backup`."""
+    print_banner()
+    backups = list_backups()
+    if not backups:
+        print(f"{YELLOW}[!] No backups found in {BACKUPS_DIR}.{RESET}")
+        print(f"{DIM}Create one with: larp backup{RESET}\n")
+        return
+
+    if args:
+        archive = args[0] if os.path.isabs(args[0]) else os.path.join(BACKUPS_DIR, args[0])
+        if not os.path.exists(archive):
+            print(f"{RED}[-] No such backup: {archive}{RESET}\n")
+            return
+    else:
+        lines = []
+        for index, path in enumerate(backups[:KEEP_BACKUPS], 1):
+            when = time.strftime("%Y-%m-%d %H:%M", time.localtime(os.path.getmtime(path)))
+            size_mb = round(os.path.getsize(path) / 1024 / 1024, 2)
+            lines.append(f"  {PINK}{index}.{RESET} {os.path.basename(path)} "
+                         f"{DIM}({when}, {size_mb} MB){RESET}")
+        print_box("Available Backups", "\n".join(lines), border_color=CYAN)
+        print()
+        try:
+            choice = input(f"{PINK}Restore which backup? [1-{len(lines)}, Enter to cancel]: {RESET}").strip()
+        except (KeyboardInterrupt, EOFError):
+            print("\nCancelled.")
+            return
+        if not choice.isdigit() or not 1 <= int(choice) <= len(lines):
+            print(f"{GREEN}[+] Cancelled — nothing was restored.{RESET}\n")
+            return
+        archive = backups[int(choice) - 1]
+
+    target_dir = os.path.expanduser("~/.config")
+    print(f"\n{YELLOW}[!] This overwrites existing files under {target_dir} "
+          f"with the contents of the archive.{RESET}")
+    try:
+        answer = input(f"{PINK}Continue? (y/N): {RESET}").strip().lower()
+    except (KeyboardInterrupt, EOFError):
+        print("\nCancelled.")
+        return
+    if answer not in ["y", "yes", "yeah"]:
+        print(f"{GREEN}[+] Cancelled — nothing was restored.{RESET}\n")
+        return
+
+    try:
+        with tarfile.open(archive, "r:gz") as tar:
+            members = [m for m in tar.getmembers() if is_safe_member(m)]
+            skipped = len(tar.getmembers()) - len(members)
+            # Python 3.12+ warns unless the extraction filter is explicit.
+            try:
+                tar.extractall(target_dir, members=members, filter="data")
+            except TypeError:
+                tar.extractall(target_dir, members=members)
+    except Exception as e:
+        print(f"{RED}[-] Restore failed: {e}{RESET}\n")
+        return
+
+    if skipped:
+        print(f"{YELLOW}[!] Skipped {skipped} unsafe path(s) in the archive.{RESET}")
+    print(f"{GREEN}[+] Restored {os.path.basename(archive)} into {target_dir}.{RESET}\n")
+
+
+def is_safe_member(member) -> bool:
+    """Rejects archive members that would write outside the target directory.
+
+    A tar can contain absolute paths, "..", or symlinks pointing anywhere on the
+    filesystem; extracting those blindly lets a tampered archive overwrite files
+    far outside ~/.config.
+    """
+    name = member.name
+    if name.startswith("/") or os.path.isabs(name):
+        return False
+    if any(part == ".." for part in name.replace("\\", "/").split("/")):
+        return False
+    if member.issym() or member.islnk():
+        link = member.linkname
+        if os.path.isabs(link) or any(part == ".." for part in link.split("/")):
+            return False
+    return True
 
 
 # =============================================================================
 # SHELL ALIAS INSTALLER (`larp alias`)
 # =============================================================================
 
-ALIAS_MARKER = "# --- Larp Shortcuts ---"
+# Must stay identical to the marker written by install.sh and removed by
+# uninstall.sh, otherwise `larp alias` appends a second copy of the block.
+ALIAS_MARKER = "# --- LarpLinux Shortcuts ---"
+ALIAS_END_MARKER = "# --- End LarpLinux Shortcuts ---"
 
 SHORTCUTS = [
     ("l", "larp"),
@@ -1371,7 +1913,7 @@ def cmd_alias():
 
         os.makedirs(os.path.dirname(target), exist_ok=True)
         with open(target, "a", encoding="utf-8") as f:
-            f.write(f"\n{ALIAS_MARKER}\n{body}\n")
+            f.write(f"\n{ALIAS_MARKER}\n{body}\n{ALIAS_END_MARKER}\n")
 
         names = ", ".join(name for name, _ in SHORTCUTS)
         print(f"{GREEN}[+] Short aliases ({names}) successfully added to {target}!{RESET}")
@@ -1410,8 +1952,18 @@ def cmd_do(args: list):
         f"Do NOT output any markdown or explanation before/after! Only the one-liner command."
     )
 
-    raw_response = query_ollama(prompt)
-    cmd = sanitize_shell_command(raw_response)
+    raw_response = ask_ai_quietly(prompt)
+    if not raw_response:
+        return
+
+    # Never hand the raw response to the shell: pick one runnable line out of it.
+    cmd = extract_single_command(raw_response)
+
+    if not cmd:
+        print_box("Larp AI Response", raw_response, border_color=YELLOW)
+        print(f"\n{YELLOW}[!] No runnable command could be extracted from the answer — "
+              f"nothing will be executed.{RESET}\n")
+        return
 
     print_box("Proposed Terminal Command", f"{BOLD}{WHITE}{cmd}{RESET}", border_color=CYAN)
     print()
@@ -1604,7 +2156,7 @@ def interactive_config_menu():
         conf_lines = [
             f"  {CYAN}Active AI Provider:{RESET}     {BOLD}{PINK}{curr_p}{RESET}",
             f"  {CYAN}Web Search (DuckDuckGo):{RESET} {'Enabled' if config.get('web_search', True) else 'Disabled'}",
-            f"  {CYAN}Auto-Repair (No Prompt):{RESET} {'Enabled (Instant Fix)' if config.get('auto_fix', True) else 'Disabled (Ask y/N)'}\n",
+            f"  {CYAN}Auto-Repair (No Prompt):{RESET} {'Enabled (Instant Fix)' if config.get('auto_fix', False) else 'Disabled (Ask y/N)'}\n",
             f"  {BOLD}{PINK}1.{RESET} Switch Active AI Provider (Ollama / Gemini / Claude / OpenAI / OpenRouter)",
             f"  {BOLD}{PINK}2.{RESET} Configure Google Gemini API",
             f"  {BOLD}{PINK}3.{RESET} Configure Anthropic Claude API",
@@ -1708,12 +2260,12 @@ def interactive_config_menu():
             print(f"{GREEN}Web Search toggled to: {config['web_search']}{RESET}")
 
         elif choice == "8":
-            config["auto_fix"] = not config.get("auto_fix", True)
+            config["auto_fix"] = not config.get("auto_fix", False)
             save_config(config)
             print(f"{GREEN}Auto-Repair toggled to: {config['auto_fix']}{RESET}")
 
         elif choice == "9":
-            save_config(DEFAULT_CONFIG)
+            save_config(json.loads(json.dumps(DEFAULT_CONFIG)))
             print(f"{GREEN}Configuration reset to default settings!{RESET}")
 
         time.sleep(0.5)
@@ -1837,6 +2389,28 @@ def cmd_config_models(args: list, config: dict):
     print(f"\n{DIM}Filter with: larp config models <text>   |   Select with: larp config set openrouter.model <id>{RESET}\n")
 
 
+def coerce_config_value(raw: str, current):
+    """Converts a command-line string to the type the setting already holds.
+
+    `larp config set` writes straight into config.json, which is sent to the
+    provider APIs as-is — a boolean stored as the string "true" or a timeout
+    stored as "5" is rejected on the wire, far away from the typo.
+    """
+    if isinstance(current, bool):
+        return raw.strip().lower() in ["true", "1", "yes", "on", "y"]
+    if isinstance(current, int):
+        try:
+            return int(raw)
+        except ValueError:
+            return raw
+    if isinstance(current, float):
+        try:
+            return float(raw)
+        except ValueError:
+            return raw
+    return raw
+
+
 def cmd_config(args: list):
     if not args:
         interactive_config_menu()
@@ -1856,28 +2430,40 @@ def cmd_config(args: list):
         keys = key_path.split(".")
         if len(keys) == 1:
             if keys[0] == "provider":
-                if val.lower() not in ["ollama", "gemini", "claude", "openai", "openrouter"]:
-                    print(f"{RED}[-] Valid providers: ollama, gemini, claude, openai, openrouter{RESET}")
+                if val.lower() not in PROVIDER_FUNCS:
+                    print(f"{RED}[-] Valid providers: {', '.join(sorted(PROVIDER_FUNCS))}{RESET}")
                     return
                 config["provider"] = val.lower()
-            elif keys[0] == "web_search":
-                config["web_search"] = val.lower() in ["true", "1", "yes", "on"]
-            elif keys[0] == "auto_fix":
-                config["auto_fix"] = val.lower() in ["true", "1", "yes", "on"]
+            elif keys[0] in ["web_search", "auto_fix"]:
+                config[keys[0]] = coerce_config_value(val, True)
             else:
-                config[keys[0]] = val
+                # Creating arbitrary top-level keys only ever produced silent
+                # typos that looked like they had been applied.
+                print(f"{RED}[-] Unknown setting: {keys[0]}{RESET}")
+                print(f"{CYAN}Top-level settings: provider, web_search, auto_fix{RESET}")
+                print(f"{CYAN}Section settings:   {'.'.join(['<section>', '<key>'])} "
+                      f"(sections: {', '.join(sorted(PROVIDER_FUNCS))}){RESET}")
+                return
         elif len(keys) == 2:
             section, item = keys[0], keys[1]
-            if section in config and isinstance(config[section], dict):
-                config[section][item] = val
-            else:
+            if section not in config or not isinstance(config[section], dict):
                 print(f"{RED}[-] Unknown config section: {section}{RESET}")
                 return
+            if item not in config[section]:
+                print(f"{YELLOW}[!] '{section}' has no setting '{item}'. "
+                      f"Known: {', '.join(sorted(config[section]))}{RESET}")
+                return
+            # The stored default tells us the type the API expects: without this
+            # `ollama.keep_alive 5` was saved as the string "5" and rejected.
+            config[section][item] = coerce_config_value(val, config[section][item])
+        else:
+            print(f"{RED}[-] Expected <key> or <section>.<key>, got '{key_path}'.{RESET}")
+            return
 
         save_config(config)
 
     elif subcmd == "reset":
-        save_config(DEFAULT_CONFIG)
+        save_config(json.loads(json.dumps(DEFAULT_CONFIG)))
         print(f"{GREEN}[+] Settings reset to defaults!{RESET}")
     else:
         interactive_config_menu()
@@ -1904,16 +2490,12 @@ def cmd_status():
     except Exception:
         pass
 
-    try:
-        with open("/proc/meminfo", "r") as f:
-            lines = f.readlines()
-            total = int(lines[0].split()[1])
-            avail = int(lines[2].split()[1])
-            used = total - avail
-            ram_pct = round((used / total) * 100, 1)
-            sys_info.append(f"  {CYAN}RAM Usage:{RESET}      [{make_bar(ram_pct)}] ({round(used/1048576, 1)}GB / {round(total/1048576, 1)}GB)")
-    except Exception:
-        pass
+    total, avail = read_meminfo()
+    if total:
+        used = total - avail
+        ram_pct = round((used / total) * 100, 1)
+        sys_info.append(f"  {CYAN}RAM Usage:{RESET}      [{make_bar(ram_pct)}] "
+                        f"({round(used/1048576, 1)}GB / {round(total/1048576, 1)}GB)")
 
     try:
         st = os.statvfs("/")
@@ -2017,10 +2599,14 @@ def cmd_chat():
 
         prompt_with_history = "\n".join(history[-6:])
 
-        response = query_ollama(prompt_with_history, extra_web_context=web_ctx)
-        history.append(f"Larp AI: {response}")
-
-        print_box(f"Larp AI ({provider_name})", response, border_color=PINK)
+        response = ask_ai_streamed(f"Larp AI ({provider_name})", prompt_with_history,
+                                   extra_web_context=web_ctx)
+        if response:
+            history.append(f"Larp AI: {response}")
+        else:
+            # Drop the unanswered turn so the next prompt is not sent with a
+            # dangling user message and no reply.
+            history.pop()
         print()
 
 
@@ -2031,7 +2617,7 @@ def cmd_help():
 
     print(f"{BOLD}{PINK}Usage:{RESET}")
     print(f"  {CYAN}larp{RESET} <command> [arguments]\n")
-    print(f"{BOLD}{PINK}Available Commands (19 Integrated Modules):{RESET}")
+    print(f"{BOLD}{PINK}Available Commands:{RESET}")
     print(f"  {PINK}{BOLD}fetch{RESET}                {DIM}Aesthetic system informer (Neofetch replacement){RESET}")
     print(f"  {PINK}{BOLD}do{RESET} {CYAN}<task>{RESET}           {DIM}Autonomous AI Terminal Copilot — translates tasks to shell pipelines{RESET}")
     print(f"  {PINK}{BOLD}code{RESET} {CYAN}<task>{RESET}         {DIM}AI Code and script generator{RESET}")
@@ -2040,7 +2626,8 @@ def cmd_help():
     print(f"  {PINK}{BOLD}config models{RESET} {CYAN}[text]{RESET} {DIM}Browse OpenRouter model IDs (optionally filtered){RESET}")
     print(f"  {PINK}{BOLD}fallback{RESET}             {DIM}Manage the provider fallback chain (add / remove / clear){RESET}")
     print(f"  {PINK}{BOLD}clean{RESET}                {DIM}Disk cleanup — package cache, logs & orphans{RESET}")
-    print(f"  {PINK}{BOLD}backup{RESET}               {DIM}Snapshot & config backup manager{RESET}")
+    print(f"  {PINK}{BOLD}backup{RESET}               {DIM}Snapshot & config backup manager (archives are owner-only){RESET}")
+    print(f"  {PINK}{BOLD}restore{RESET} {CYAN}[archive]{RESET}    {DIM}Restore configuration from a backup archive{RESET}")
     print(f"  {PINK}{BOLD}alias{RESET}                {DIM}Install short terminal shortcuts (l, ld, lw, lc, lg, lf) into ~/.bashrc{RESET}")
     print(f"  {PINK}{BOLD}bench{RESET}                {DIM}Speedtest & latency benchmark for all AI providers{RESET}")
     print(f"  {PINK}{BOLD}status{RESET}               {DIM}System radar — CPU/RAM/Disk loads & active AI engine{RESET}")
@@ -2053,6 +2640,7 @@ def cmd_help():
     print(f"  {PINK}{BOLD}get-list{RESET}             {DIM}Registry of all available Linux software packs{RESET}")
     print(f"  {PINK}{BOLD}get-create{RESET} {CYAN}<task>{RESET}   {DIM}AI Pack Architect with live package validation{RESET}")
     print(f"  {PINK}{BOLD}help{RESET}                 {DIM}Display this help menu{RESET}")
+    print(f"  {PINK}{BOLD}version{RESET}              {DIM}Print the larp version{RESET}")
     print()
 
 
@@ -2100,7 +2688,9 @@ def cmd_get_create(args: list):
         f"4. End response with: PACK_NAME: <short-pack-name>"
     )
 
-    response = query_ollama(prompt, extra_web_context=web_context)
+    response = ask_ai_quietly(prompt, extra_web_context=web_context)
+    if not response:
+        return
 
     cmd_to_run = ""
     suggested_name = "custom-pack"
@@ -2161,10 +2751,10 @@ def cmd_why(args: list):
     print(f"{CYAN}Searching Web & Repositories (DuckDuckGo Search)...{RESET}")
     web_context = get_full_web_context(question)
 
-    response = query_ollama(question, extra_web_context=web_context)
     config = load_config()
     p_name = config.get("provider", "ollama").upper()
-    print_box(f"Larp AI [{p_name}] (Web-Search Enabled)", response, border_color=PINK)
+    ask_ai_streamed(f"Larp AI [{p_name}] (Web-Search Enabled)", question,
+                    extra_web_context=web_context)
     print()
 
 
@@ -2200,7 +2790,9 @@ def cmd_fix(args: list = None) -> bool:
         f"2. Provide an exact one-liner bash resolution command formatted as: FIX_CMD: <fix_command>"
     )
 
-    response = query_ollama(prompt)
+    response = ask_ai_quietly(prompt)
+    if not response:
+        return False
     config = load_config()
     p_name = config.get("provider", "ollama").upper()
 
@@ -2303,6 +2895,8 @@ def main():
 
     if subcommand in ["help", "-h", "--help"]:
         cmd_help()
+    elif subcommand in ["version", "--version", "-V"]:
+        print(f"larp {__version__}")
     elif subcommand in ["fetch", "neofetch"]:
         cmd_fetch()
     elif subcommand in ["code", "script"]:
@@ -2311,6 +2905,8 @@ def main():
         cmd_translate(args)
     elif subcommand in ["backup", "snapshot"]:
         cmd_backup()
+    elif subcommand == "restore":
+        cmd_restore(args)
     elif subcommand in ["alias", "setup-aliases"]:
         cmd_alias()
     elif subcommand == "config":
