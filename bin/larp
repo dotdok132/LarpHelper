@@ -1189,12 +1189,12 @@ def _cmd_voice_setup():
     vc = config.get("voice", {})
 
     print(f"{BOLD}{PINK}=== Larp Voice Assistant Setup Wizard ==={RESET}\n")
-    print(f"1) 🎙️ Select & Auto-Install Voice Engine (RHVoice Elena / Aleksandr / OpenAI / Piper)")
-    print(f"2) ⚡ Configure Groq Whisper API Key (Free fast online STT)")
-    print(f"3) 🧠 Change Local Whisper Model (tiny / base / small / medium)")
-    print(f"4) ⏱️ Toggle VAD Silence Auto-Stop ({'Enabled' if vc.get('auto_stop_silence', True) else 'Disabled'})")
-    print(f"5) ⌛ Change Max Recording Duration ({vc.get('max_duration', 8)}s)")
-    print(f"6) Exit setup\n")
+    print(f"1) [Voice]   Select & Auto-Install Voice Engine (RHVoice / OpenAI / Piper)")
+    print(f"2) [Groq]    Configure Groq Whisper API Key (Free fast online STT)")
+    print(f"3) [Whisper] Change Local Whisper Model (tiny / base / small / medium)")
+    print(f"4) [VAD]     Toggle VAD Silence Auto-Stop ({'Enabled' if vc.get('auto_stop_silence', True) else 'Disabled'})")
+    print(f"5) [Time]    Change Max Recording Duration ({vc.get('max_duration', 8)}s)")
+    print(f"6) [Exit]    Exit setup\n")
 
     try:
         choice = input(f"{CYAN}Select option [1-6]: {RESET}").strip()
@@ -1244,12 +1244,12 @@ def _setup_voice_engine_installer(config: dict):
     pkg_name, install_prefix, _, _ = detect_package_manager()
 
     print(f"\n{BOLD}{PINK}=== Select & Auto-Install Voice Engine [{pkg_name.upper()}] ==={RESET}\n")
-    print(f"1) 🌸 RHVoice Elena (Russian Female, Natural Offline Voice)")
-    print(f"2) 👨 RHVoice Aleksandr (Russian Male, Natural Offline Voice)")
-    print(f"3) 🌟 OpenAI Nova (Studio Quality Online Voice)")
-    print(f"4) 🌟 OpenAI Shimmer (Studio Quality Female Online Voice)")
-    print(f"5) ⚡ Piper Neural TTS (Offline Engine)")
-    print(f"6) 🌐 Google Translate Voice (Standard)\n")
+    print(f"1) [RHVoice] Elena (Russian Female, Natural Offline Voice)")
+    print(f"2) [RHVoice] Aleksandr (Russian Male, Natural Offline Voice)")
+    print(f"3) [OpenAI]  Nova (Studio Quality Online Voice)")
+    print(f"4) [OpenAI]  Shimmer (Studio Quality Female Online Voice)")
+    print(f"5) [Piper]   Neural TTS Engine (Offline)")
+    print(f"6) [Google]  Standard Google Neural Voice\n")
 
     try:
         v_choice = input(f"{CYAN}Select voice [1-6]: {RESET}").strip()
@@ -3017,11 +3017,11 @@ def interactive_config_menu():
             f"  {CYAN}Active AI Engine:{RESET}     {BOLD}{PINK}{curr_p}{RESET}",
             f"  {CYAN}Voice Assistant:{RESET}      {GREEN}{tts_engine.upper()}{RESET} [{tts_voice}]  | STT: {GREEN}{stt_info.split()[0]}{RESET}",
             f"  {CYAN}System Behavior:{RESET}      Web: {'ON' if config.get('web_search', True) else 'OFF'}  | Auto-Fix: {'ON' if config.get('auto_fix', False) else 'OFF'}\n",
-            f"  {BOLD}{PINK}1.{RESET} 🤖 AI Providers & Models   (Gemini, Claude, OpenAI, Ollama, OpenRouter)",
-            f"  {BOLD}{PINK}2.{RESET} 🎙️ Voice Assistant Hub      (Select Voice, STT, VAD Auto-Stop, Rec Time)",
-            f"  {BOLD}{PINK}3.{RESET} ⚙️ System & Fallback Chain  (Web Search, Auto-Fix Mode, Fallback Order)",
-            f"  {BOLD}{PINK}4.{RESET} 🔄 Reset All Configuration to Defaults",
-            f"  {BOLD}{PINK}0.{RESET} 💾 Save & Exit Master Control"
+            f"  {BOLD}{PINK}1.{RESET} [AI]     AI Providers & Models   (Gemini, Claude, OpenAI, Ollama, OpenRouter)",
+            f"  {BOLD}{PINK}2.{RESET} [Voice]  Voice Assistant Hub      (Select Voice, STT, VAD Auto-Stop, Rec Time)",
+            f"  {BOLD}{PINK}3.{RESET} [System] System & Fallback Chain  (Web Search, Auto-Fix Mode, Fallback Order)",
+            f"  {BOLD}{PINK}4.{RESET} [Reset]  Reset All Configuration to Defaults",
+            f"  {BOLD}{PINK}0.{RESET} [Exit]   Save & Exit Master Control"
         ]
 
         print_banner()
