@@ -688,6 +688,34 @@ def _clean_text_for_speech(text: str) -> str:
     return clean
 
 
+def _openai_tts_request(text: str, api_key: str, voice: str = "nova") -> bool:
+    """Synthesizes studio-quality neural voice using OpenAI TTS API."""
+    try:
+        url = "https://api.openai.com/v1/audio/speech"
+        payload = json.dumps({
+            "model": "tts-1",
+            "input": text,
+            "voice": voice,
+            "response_format": "mp3"
+        }).encode("utf-8")
+        req = urllib.request.Request(
+            url,
+            data=payload,
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json"
+            },
+            method="POST"
+        )
+        with urllib.request.urlopen(req, timeout=12) as resp:
+            data = resp.read()
+            with open(TMP_AUDIO_OUTPUT_MP3, "wb") as f:
+                f.write(data)
+            return True
+    except Exception:
+        return False
+
+
 def tts_synthesize_and_play(text: str, lang: str = "ru"):
     """Synthesizes text into high-quality neural voice audio and plays it via standard Linux audio player."""
     config = load_config()
@@ -702,11 +730,24 @@ def tts_synthesize_and_play(text: str, lang: str = "ru"):
     lang = vc.get("language", lang)
     engine = vc.get("tts_engine", "auto")
 
+    # 0. OpenAI Studio Neural TTS (highest studio human quality)
+    openai_key = vc.get("openai_api_key", "").strip() or config.get("openai", {}).get("api_key", "").strip()
+    if (engine == "openai" or (engine == "auto" and openai_key)) and openai_key:
+        tts_voice = vc.get("tts_voice", "nova")
+        if _openai_tts_request(clean_text, openai_key, voice=tts_voice):
+            if shutil.which("ffmpeg") and shutil.which("aplay"):
+                subprocess.run(f"ffmpeg -y -i {TMP_AUDIO_OUTPUT_MP3} {TMP_AUDIO_OUTPUT_WAV} 2>/dev/null && aplay -q {TMP_AUDIO_OUTPUT_WAV} 2>/dev/null", shell=True)
+            elif shutil.which("mpv"):
+                subprocess.run(f"mpv --no-terminal {TMP_AUDIO_OUTPUT_MP3} 2>/dev/null", shell=True)
+            elif shutil.which("paplay"):
+                subprocess.run(f"paplay {TMP_AUDIO_OUTPUT_MP3} 2>/dev/null", shell=True)
+            return
+
     # 1. RHVoice offline neural engine (if installed)
-    rh_bin = shutil.which("RHVoice-test") or shutil.which("rhvoice-client")
+    rh_bin = shutil.which("RHVoice-test") or shutil.which("rhvoice-client") or shutil.which("rhvoice")
     if (engine == "rhvoice" or engine == "auto") and rh_bin:
         try:
-            voice_name = "Elena" if lang == "ru" else "clb"
+            voice_name = vc.get("rhvoice_voice", "Elena") if lang == "ru" else "clb"
             cmd = f"echo {shlex.quote(clean_text)} | {rh_bin} -p {voice_name} -o {TMP_AUDIO_OUTPUT_WAV} 2>/dev/null && aplay -q {TMP_AUDIO_OUTPUT_WAV} 2>/dev/null"
             subprocess.run(cmd, shell=True)
             return
@@ -735,7 +776,6 @@ def tts_synthesize_and_play(text: str, lang: str = "ru"):
                         f.write(data)
 
                 if shutil.which("ffmpeg") and shutil.which("aplay"):
-                    # Master audio with natural 1.04x tempo, highpass filter (removes low hum), lowpass filter, and volume boost
                     filter_chain = "atempo=1.04,highpass=f=80,lowpass=f=8000,volume=1.25"
                     subprocess.run(f"ffmpeg -y -i {TMP_AUDIO_OUTPUT_MP3} -af \"{filter_chain}\" {TMP_AUDIO_OUTPUT_WAV} 2>/dev/null && aplay -q {TMP_AUDIO_OUTPUT_WAV} 2>/dev/null", shell=True)
                 elif shutil.which("mpv"):
