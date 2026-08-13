@@ -24,6 +24,8 @@ import shutil
 import socket
 import tarfile
 import random
+import math
+import shlex
 
 __version__ = "4.1.0"
 
